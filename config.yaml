@@ -1,0 +1,103 @@
+# PCM System Configuration
+# ========================
+# Proactive Cognitive Memory System - Production Configuration
+
+# =============================================================================
+# LLM API Configuration
+# =============================================================================
+model:
+  # Main LLM model (for reasoning and generation)
+  llm_model: "gpt-4o"
+
+  # Router LLM model (lightweight, for intent classification)
+  router_model: "gpt-4o-mini"
+
+  # OpenAI API credentials
+  openai_api_key: "sk-wCFRXe9ehPRr3N4wAX40UeWJU5nPExedV6YSP0kRQSBK9xjh"
+  openai_base_url: "https://vip.dmxapi.com/v1"
+
+# =============================================================================
+# Embedding Model Configuration
+# =============================================================================
+embedding:
+  model_id: "sentence-transformers/all-MiniLM-L6-v2"
+  dimension: 384
+
+# =============================================================================
+# Surprisal Calculation Model
+# =============================================================================
+surprisal:
+  # Local model for NLL calculation (gpt2 or TinyLlama)
+  model_id: "gpt2"
+
+# =============================================================================
+# Surprisal Thresholds (Core PCM Parameters)
+# =============================================================================
+thresholds:
+  # High surprise threshold -> Correction Agent
+  theta_high: 3.0
+
+  # Low surprise threshold -> Maintenance Agent
+  # Medium: theta_low < S <= theta_high -> Profiling Agent
+  theta_low: 1.0
+
+  # Lambda for effective surprisal (entropy weight)
+  lambda_factor: 0.5
+
+# =============================================================================
+# Bayesian Weight Update Parameters
+# =============================================================================
+weights:
+  # Learning rate for maintenance (reinforcement)
+  eta: 0.05
+
+  # Decay factor for correction
+  beta: 0.3
+
+  # Time decay for hypothesis nodes
+  gamma: 0.01
+
+  # Initial hypothesis weight range
+  hypothesis_min: 0.3
+  hypothesis_max: 0.5
+
+# =============================================================================
+# Working Memory Configuration
+# =============================================================================
+working_memory:
+  max_context_tokens: 2000
+  eviction_size: 3
+
+# =============================================================================
+# Knowledge Graph Configuration
+# =============================================================================
+knowledge_graph:
+  retrieval_top_k: 10
+  retrieval_min_score: 0.3
+
+# =============================================================================
+# Intent Domains
+# =============================================================================
+intent_domains:
+  - "Coding"
+  - "Academic"
+  - "Personal"
+  - "Casual"
+  - "Professional"
+  - "Creative"
+
+# =============================================================================
+# Data Paths
+# =============================================================================
+paths:
+  data_dir: "./data"
+  graph_save: "./data/knowledge_graph.gml"
+  chroma_persist: "./data/chroma_db"
+  dataset: "./data/locomo10.json"
+
+# =============================================================================
+# Debug / Testing
+# =============================================================================
+debug:
+  use_mock_llm: false
+  verbose: true
