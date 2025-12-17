@@ -33,6 +33,7 @@ class MemoryNode(BaseModel):
     created_at: datetime = Field(default_factory=datetime.now)
     last_accessed: datetime = Field(default_factory=datetime.now)
     metadata: Dict[str, Any] = Field(default_factory=dict)
+    embedding: Optional[List[float]] = Field(default=None, description="Vector embedding of content")
 
     def update_access_time(self) -> None:
         """Update the last accessed timestamp."""
@@ -47,7 +48,8 @@ class MemoryNode(BaseModel):
             "weight": self.weight,
             "created_at": self.created_at.isoformat(),
             "last_accessed": self.last_accessed.isoformat(),
-            "metadata": str(self.metadata)
+            "metadata": str(self.metadata),
+            "has_embedding": self.embedding is not None
         }
 
     class Config:
@@ -143,6 +145,7 @@ class SurprisalPacket(BaseModel):
     - Raw surprisal score S_raw
     - Effective surprisal score S_eff (after entropy adjustment)
     - Retrieved context used for calculation
+    - Semantic analysis metadata (when using semantic method)
     """
     content: str = Field(..., description="The evicted/new content being processed")
     raw_score: float = Field(default=0.0, description="Raw NLL-based surprisal S_raw")
@@ -152,6 +155,12 @@ class SurprisalPacket(BaseModel):
     retrieved_node_ids: List[str] = Field(default_factory=list, description="IDs of retrieved nodes")
     intent: Optional[Intent] = Field(default=None, description="Intent classification result")
     timestamp: datetime = Field(default_factory=datetime.now)
+
+    # Semantic analysis metadata (populated when using semantic surprisal method)
+    semantic_analysis: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Semantic analysis details: relation, conflict_score, reasoning, conflicting_ids"
+    )
 
     def get_surprise_level(self, theta_low: float, theta_high: float) -> str:
         """
@@ -168,6 +177,24 @@ class SurprisalPacket(BaseModel):
             return "medium"
         else:
             return "high"
+
+    def get_relation(self) -> Optional[str]:
+        """Get the semantic relation type if available."""
+        if self.semantic_analysis:
+            return self.semantic_analysis.get("relation")
+        return None
+
+    def get_reasoning(self) -> Optional[str]:
+        """Get the LLM reasoning for the surprisal classification."""
+        if self.semantic_analysis:
+            return self.semantic_analysis.get("reasoning")
+        return None
+
+    def get_conflicting_ids(self) -> List[str]:
+        """Get IDs of conflicting memories if any."""
+        if self.semantic_analysis:
+            return self.semantic_analysis.get("conflicting_ids", [])
+        return []
 
 
 class HypothesisNode(MemoryNode):

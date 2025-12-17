@@ -23,10 +23,8 @@ from src.core.types import (
     ConversationTurn, EvictedData, Intent, SurprisalPacket, MemoryNode
 )
 from src.utils.llm_client import LLMClient, get_llm_client
-from src.utils.metrics import get_surprisal_calculator
-from src.utils.math_utils import (
-    compute_retrieval_entropy, compute_effective_surprisal, softmax
-)
+from src.utils.metrics import get_surprisal_calculator, SurprisalCalculator
+from src.utils.math_utils import compute_retrieval_entropy, softmax
 
 
 class SlidingContextQueue:
@@ -318,10 +316,10 @@ class SurpriseMonitor:
     """
     Surprise Monitor: The Gatekeeper
 
-    Computes surprisal scores to measure expectation violation.
+    Computes surprisal scores to measure expectation violation using
+    semantic similarity + LLM conflict detection.
 
-    S_raw(u_t) = -log P_LLM(u_t | C_retrieved)
-    S_eff(u_t) = S_raw(u_t) * (1 - λ * H(C_t))
+    S_eff = α × semantic_distance + (1-α) × conflict_score
     """
 
     def __init__(self, use_mock: bool = False):
@@ -336,14 +334,16 @@ class SurpriseMonitor:
         self.theta_low = config.THETA_LOW
         self.theta_high = config.THETA_HIGH
 
-    def calculate_surprisal(
+    def calculate_surprisal_sync(
         self,
         user_input: str,
         retrieved_nodes: List[MemoryNode],
         retrieval_scores: List[float]
     ) -> SurprisalPacket:
         """
-        Calculate surprisal for user input given retrieved context.
+        Calculate surprisal synchronously (uses semantic distance only).
+
+        For full analysis with LLM conflict detection, use calculate_surprisal().
 
         Args:
             user_input: User's query
@@ -362,18 +362,14 @@ class SurpriseMonitor:
         else:
             context = ""
 
-        # Calculate raw surprisal (NLL)
-        raw_score = self.calculator.calculate_nll(user_input, context)
+        # Calculate raw surprisal (semantic distance only)
+        raw_score = self.calculator.calculate_sync(user_input, context)
 
         # Calculate retrieval entropy
         retrieval_entropy = compute_retrieval_entropy(retrieval_scores)
 
-        # Calculate effective surprisal
-        effective_score = compute_effective_surprisal(
-            raw_score,
-            retrieval_entropy,
-            self.lambda_factor
-        )
+        # Apply entropy adjustment
+        effective_score = raw_score * (1.0 - 0.3 * retrieval_entropy)
 
         return SurprisalPacket(
             content=user_input,
@@ -384,6 +380,69 @@ class SurpriseMonitor:
             retrieved_node_ids=[n.id for n in retrieved_nodes],
             timestamp=datetime.now()
         )
+
+    async def calculate_surprisal(
+        self,
+        user_input: str,
+        retrieved_nodes: List[MemoryNode],
+        retrieval_scores: List[float]
+    ) -> SurprisalPacket:
+        """
+        Calculate surprisal asynchronously with full semantic analysis.
+
+        Uses embedding similarity + LLM conflict detection.
+
+        Args:
+            user_input: User's query
+            retrieved_nodes: Nodes retrieved from L2
+            retrieval_scores: Corresponding retrieval scores
+
+        Returns:
+            SurprisalPacket with detailed surprisal analysis
+        """
+        # Extract memory info
+        memory_contents = [node.content for node in retrieved_nodes]
+        memory_ids = [node.id for node in retrieved_nodes]
+        memory_embeddings = [node.embedding for node in retrieved_nodes if node.embedding is not None]
+
+        if len(memory_embeddings) != len(retrieved_nodes):
+            memory_embeddings = None  # Let calculator compute embeddings
+
+        # Calculate semantic surprisal with full analysis
+        result = await self.calculator.calculate_surprisal(
+            user_input=user_input,
+            memory_contents=memory_contents,
+            memory_ids=memory_ids,
+            memory_embeddings=memory_embeddings
+        )
+
+        # Calculate retrieval entropy
+        retrieval_entropy = compute_retrieval_entropy(retrieval_scores)
+
+        # Apply entropy adjustment
+        raw_score = result["raw_score"]
+        effective_score = raw_score * (1.0 - 0.3 * retrieval_entropy)
+
+        packet = SurprisalPacket(
+            content=user_input,
+            raw_score=raw_score,
+            effective_score=effective_score,
+            retrieval_entropy=retrieval_entropy,
+            retrieved_context=memory_contents,
+            retrieved_node_ids=memory_ids,
+            timestamp=datetime.now()
+        )
+
+        # Add semantic analysis metadata
+        packet.semantic_analysis = {
+            "semantic_distance": result["semantic_distance"],
+            "conflict_score": result["conflict_score"],
+            "relation": result["relation"],
+            "reasoning": result["reasoning"],
+            "conflicting_ids": result["conflicting_ids"]
+        }
+
+        return packet
 
     def get_surprise_level(self, packet: SurprisalPacket) -> str:
         """
@@ -431,7 +490,7 @@ class PerceptionLayer:
 
         1. Add to context queue (may evict)
         2. Classify intent
-        3. Calculate surprisal
+        3. Calculate surprisal with full semantic analysis
 
         Args:
             user_input: User's message
@@ -453,8 +512,8 @@ class PerceptionLayer:
         # Classify intent
         intent = await self.intent_router.classify(user_input, context)
 
-        # Calculate surprisal
-        surprisal_packet = self.surprise_monitor.calculate_surprisal(
+        # Calculate surprisal with full semantic analysis
+        surprisal_packet = await self.surprise_monitor.calculate_surprisal(
             user_input,
             retrieved_nodes,
             retrieval_scores
@@ -477,5 +536,6 @@ class PerceptionLayer:
             "total_tokens": self.context_queue.total_tokens,
             "num_turns": self.context_queue.num_turns,
             "theta_low": self.surprise_monitor.theta_low,
-            "theta_high": self.surprise_monitor.theta_high
+            "theta_high": self.surprise_monitor.theta_high,
+            "alpha": self.surprise_monitor.calculator.alpha
         }

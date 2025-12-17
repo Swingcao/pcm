@@ -90,10 +90,12 @@ EMBEDDING_DIMENSION = _get("embedding", "dimension", 384)
 
 
 # =============================================================================
-# Surprisal Scoring Model Configuration
+# Surprisal Configuration
 # =============================================================================
 
-SURPRISAL_MODEL_ID = _get("surprisal", "model_id", "gpt2")
+# Alpha: weight for embedding distance vs LLM conflict score
+# 0 = pure LLM, 1 = pure embedding
+SURPRISAL_ALPHA = _get("surprisal", "alpha", 0.4)
 
 
 # =============================================================================

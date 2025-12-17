@@ -24,11 +24,12 @@ embedding:
   dimension: 384
 
 # =============================================================================
-# Surprisal Calculation Model
+# Surprisal Calculation Configuration
 # =============================================================================
 surprisal:
-  # Local model for NLL calculation (gpt2 or TinyLlama)
-  model_id: "gpt2"
+  # Alpha: weight balance between embedding distance and LLM conflict score
+  # 0 = pure LLM conflict detection, 1 = pure embedding similarity
+  alpha: 0.4
 
 # =============================================================================
 # Surprisal Thresholds (Core PCM Parameters)
