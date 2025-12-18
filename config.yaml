@@ -92,8 +92,9 @@ intent_domains:
 # =============================================================================
 paths:
   data_dir: "./data"
-  graph_save: "./data/knowledge_graph.gml"
-  chroma_persist: "./data/chroma_db"
+  results_dir: "./results"
+  graph_save: "./results/knowledge_graphs/knowledge_graph.json"
+  vector_store: "./results/vector_stores"
   dataset: "./data/locomo10.json"
 
 # =============================================================================

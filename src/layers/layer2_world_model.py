@@ -5,8 +5,10 @@ Weighted Knowledge Graph with vector index for intent-masked retrieval.
 
 This layer maintains:
 1. NetworkX DiGraph for structural relationships
-2. ChromaDB collection for vector-based retrieval
+2. JSON-based vector storage for semantic retrieval (replaces ChromaDB)
 3. Soft update mechanisms for Bayesian confidence weights
+
+All data is stored locally in JSON format for easy inspection and portability.
 """
 
 import os
@@ -15,8 +17,7 @@ from typing import List, Dict, Optional, Tuple, Any
 from datetime import datetime
 import numpy as np
 import networkx as nx
-import chromadb
-from chromadb.config import Settings
+from networkx.readwrite import json_graph
 from sentence_transformers import SentenceTransformer
 
 import sys
@@ -29,6 +30,25 @@ from src.utils.math_utils import (
     reinforcement_update, decay_update, compute_retrieval_score,
     cosine_similarity, compute_retrieval_entropy
 )
+from src.utils.json_storage import JSONVectorStore, ResultsManager
+
+
+# Global embedding model instance (lazy loaded)
+_embedding_model = None
+
+
+def get_embedding_model() -> SentenceTransformer:
+    """
+    Get or create a shared embedding model instance.
+
+    Returns:
+        SentenceTransformer model
+    """
+    global _embedding_model
+    if _embedding_model is None:
+        device = 'cuda' if __import__('torch').cuda.is_available() else 'cpu'
+        _embedding_model = SentenceTransformer(config.EMBEDDING_MODEL_ID).to(device)
+    return _embedding_model
 
 
 class WeightedKnowledgeGraph:
@@ -38,25 +58,35 @@ class WeightedKnowledgeGraph:
     Maintains a weighted knowledge graph G_t = (V_t, E_t) with:
     - Nodes: Entities, Attributes, Hypotheses
     - Edges: Weighted relationships with confidence scores
-    - Vector Index: For semantic similarity search
+    - Vector Index: For semantic similarity search (JSON-based local storage)
+
+    All data is stored locally in JSON format in the unified results folder.
     """
 
     def __init__(
         self,
         graph_path: Optional[str] = None,
-        chroma_path: Optional[str] = None,
-        embedding_model: Optional[SentenceTransformer] = None
+        vector_store_path: Optional[str] = None,
+        embedding_model: Optional[SentenceTransformer] = None,
+        results_base: Optional[str] = None
     ):
         """
         Initialize the knowledge graph.
 
         Args:
-            graph_path: Path to save/load the NetworkX graph
-            chroma_path: Path for ChromaDB persistence
+            graph_path: Path to save/load the NetworkX graph (JSON format)
+            vector_store_path: Path for JSON vector storage
             embedding_model: SentenceTransformer model for embeddings
+            results_base: Base path for unified results folder
         """
-        self.graph_path = graph_path or config.GRAPH_SAVE_PATH
-        self.chroma_path = chroma_path or config.CHROMA_PERSIST_DIR
+        # Initialize results manager for unified storage
+        self.results_manager = ResultsManager(results_base or config.RESULTS_DIR)
+
+        # Set paths for graph and vector store
+        self.graph_path = graph_path or self.results_manager.get_path(
+            'knowledge_graphs', 'knowledge_graph.json'
+        )
+        self.vector_store_path = vector_store_path or self.results_manager.folders['vector_stores']
 
         # Initialize NetworkX DiGraph
         self.graph = nx.DiGraph()
@@ -68,12 +98,10 @@ class WeightedKnowledgeGraph:
         else:
             self.embedding_model = embedding_model
 
-        # Initialize ChromaDB
-        os.makedirs(self.chroma_path, exist_ok=True)
-        self.chroma_client = chromadb.PersistentClient(path=self.chroma_path)
-        self.collection = self.chroma_client.get_or_create_collection(
-            name="pcm_nodes",
-            metadata={"hnsw:space": "cosine"}
+        # Initialize JSON-based vector store (replaces ChromaDB)
+        self.vector_store = JSONVectorStore(
+            storage_path=self.vector_store_path,
+            collection_name="pcm_nodes"
         )
 
         # In-memory node cache for quick access
@@ -101,8 +129,8 @@ class WeightedKnowledgeGraph:
         # Generate embedding
         embedding = self.embedding_model.encode(node.content).tolist()
 
-        # Add to ChromaDB
-        self.collection.upsert(
+        # Add to JSON vector store (replaces ChromaDB)
+        self.vector_store.upsert(
             ids=[node.id],
             embeddings=[embedding],
             metadatas=[{
@@ -196,19 +224,19 @@ class WeightedKnowledgeGraph:
         self.graph.nodes[node_id]["weight"] = new_weight
         self.graph.nodes[node_id]["last_accessed"] = datetime.now().isoformat()
 
-        # Update ChromaDB metadata
+        # Update JSON vector store metadata
         try:
-            existing = self.collection.get(ids=[node_id])
+            existing = self.vector_store.get(ids=[node_id])
             if existing["metadatas"]:
                 metadata = existing["metadatas"][0]
                 metadata["weight"] = new_weight
                 metadata["last_accessed"] = datetime.now().isoformat()
-                self.collection.update(
+                self.vector_store.update(
                     ids=[node_id],
                     metadatas=[metadata]
                 )
         except Exception:
-            pass  # ChromaDB update is best-effort
+            pass  # Vector store update is best-effort
 
         # Update cache
         if node_id in self._node_cache:
@@ -289,10 +317,10 @@ class WeightedKnowledgeGraph:
         # Get query embedding
         query_embedding = self.embedding_model.encode(query).tolist()
 
-        # Query ChromaDB
-        results = self.collection.query(
+        # Query JSON vector store
+        results = self.vector_store.query(
             query_embeddings=[query_embedding],
-            n_results=min(top_k * 3, self.collection.count() or 1),  # Over-fetch for filtering
+            n_results=min(top_k * 3, self.vector_store.count() or 1),  # Over-fetch for filtering
             include=["metadatas", "distances", "documents"]
         )
 
@@ -306,7 +334,7 @@ class WeightedKnowledgeGraph:
             metadata = results["metadatas"][0][idx]
             distance = results["distances"][0][idx]
 
-            # Convert distance to similarity (ChromaDB returns distance for cosine)
+            # Convert distance to similarity (distance is 1 - similarity for cosine)
             similarity = 1.0 - distance
 
             # Get node weight
@@ -460,14 +488,14 @@ class WeightedKnowledgeGraph:
             node_data.get("weight", 0.5) + 0.3
         )
 
-        # Update ChromaDB
+        # Update JSON vector store
         try:
-            existing = self.collection.get(ids=[hypothesis_id])
+            existing = self.vector_store.get(ids=[hypothesis_id])
             if existing["metadatas"]:
                 metadata = existing["metadatas"][0]
                 metadata["node_type"] = NodeType.FACT.value
                 metadata["weight"] = self.graph.nodes[hypothesis_id]["weight"]
-                self.collection.update(
+                self.vector_store.update(
                     ids=[hypothesis_id],
                     metadatas=[metadata]
                 )
@@ -500,19 +528,71 @@ class WeightedKnowledgeGraph:
         return pruned
 
     def save(self) -> None:
-        """Save the graph to disk."""
+        """Save the graph to disk in both JSON and GML formats."""
         os.makedirs(os.path.dirname(self.graph_path), exist_ok=True)
-        nx.write_gml(self.graph, self.graph_path)
+
+        # === Save JSON format (for easy viewing and analysis) ===
+        graph_data = json_graph.node_link_data(self.graph)
+        save_data = {
+            "metadata": {
+                "saved_at": datetime.now().isoformat(),
+                "num_nodes": self.graph.number_of_nodes(),
+                "num_edges": self.graph.number_of_edges()
+            },
+            "graph": graph_data
+        }
+        with open(self.graph_path, 'w', encoding='utf-8') as f:
+            json.dump(save_data, f, ensure_ascii=False, indent=2, default=str)
+
+        # === Save GML format (original format for NetworkX compatibility) ===
+        gml_path = self.graph_path.replace('.json', '.gml')
+        try:
+            nx.write_gml(self.graph, gml_path)
+        except Exception as e:
+            print(f"Warning: Failed to save GML format: {e}")
+
+        # Also save intermediate state for debugging
+        self.results_manager.save_intermediate(
+            name="graph_snapshot",
+            data={
+                "statistics": self.get_statistics(),
+                "node_types": self._count_node_types()
+            }
+        )
 
     def _load_graph(self) -> None:
-        """Load the graph from disk if exists."""
+        """Load the graph from disk if exists (supports both JSON and legacy GML)."""
+        # Try JSON format first
         if os.path.exists(self.graph_path):
             try:
-                self.graph = nx.read_gml(self.graph_path)
-                print(f"Loaded graph with {self.graph.number_of_nodes()} nodes")
+                with open(self.graph_path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+
+                if "graph" in data:
+                    self.graph = json_graph.node_link_graph(data["graph"])
+                else:
+                    # Direct graph data without metadata wrapper
+                    self.graph = json_graph.node_link_graph(data)
+
+                print(f"Loaded graph with {self.graph.number_of_nodes()} nodes from JSON")
+                return
             except Exception as e:
-                print(f"Failed to load graph: {e}")
-                self.graph = nx.DiGraph()
+                print(f"Failed to load JSON graph: {e}")
+
+        # Try legacy GML format for backwards compatibility
+        legacy_gml_path = self.graph_path.replace('.json', '.gml')
+        if os.path.exists(legacy_gml_path):
+            try:
+                self.graph = nx.read_gml(legacy_gml_path)
+                print(f"Loaded graph with {self.graph.number_of_nodes()} nodes from legacy GML")
+                # Save in new JSON format
+                self.save()
+                return
+            except Exception as e:
+                print(f"Failed to load GML graph: {e}")
+
+        # Initialize empty graph
+        self.graph = nx.DiGraph()
 
     def get_statistics(self) -> Dict[str, Any]:
         """Get graph statistics."""
@@ -521,7 +601,7 @@ class WeightedKnowledgeGraph:
             "num_edges": self.graph.number_of_edges(),
             "node_types": self._count_node_types(),
             "avg_weight": self._average_weight(),
-            "vector_count": self.collection.count()
+            "vector_count": self.vector_store.count()
         }
 
     def _count_node_types(self) -> Dict[str, int]:

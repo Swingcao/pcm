@@ -3,6 +3,8 @@ LoComo Experiment Runner
 ========================
 Run evaluation experiments on the LoComo benchmark using the PCM memory system.
 
+All results are saved to the unified results folder in JSON format.
+
 Usage:
     python run_experiment.py                    # Run full experiment
     python run_experiment.py --sample 0         # Run single sample
@@ -14,23 +16,35 @@ import asyncio
 import argparse
 import json
 import os
+import sys
 from datetime import datetime
 from typing import Dict, Any, List, Optional
 from tqdm import tqdm
 
-import sys
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+# Add project root to path only if not already there
+_project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
 
 import config
 from src.core.orchestrator import PCMSystem, create_pcm_system
 from src.core.types import NodeType
 from src.evaluation.dataset import LoCoMoDataset, LoCoMoSample, load_locomo, process_dialogues_for_memory
 from src.evaluation.metrics import LoCoMoEvaluator
+from src.utils.json_storage import ResultsManager
+from src.utils.raw_data_store import RawDataStore, HybridRetriever
+from src.evaluation.statistics import ExperimentStatistics, analyze_experiment_results
 
 
 class LoCoMoExperiment:
     """
     Experiment runner for LoComo benchmark evaluation.
+
+    All results are saved to the unified results folder:
+    - results/experiments/{experiment_name}/
+      - sample_{idx}/results.json
+      - aggregate_results.json
+      - detailed_results.json
 
     Workflow:
     1. Load dataset
@@ -43,22 +57,30 @@ class LoCoMoExperiment:
 
     def __init__(
         self,
-        output_dir: str = "./experiment_results",
+        experiment_name: str = "locomo_experiment",
+        results_base: str = None,
         use_mock: bool = False
     ):
         """
         Initialize the experiment.
 
         Args:
-            output_dir: Directory to save results
+            experiment_name: Name of the experiment
+            results_base: Base directory for results (default: ./results)
             use_mock: Use mock LLM for testing
         """
-        self.output_dir = output_dir
+        self.experiment_name = experiment_name
         self.use_mock = use_mock
         self.dataset: Optional[LoCoMoDataset] = None
         self.evaluator = LoCoMoEvaluator()
 
-        os.makedirs(output_dir, exist_ok=True)
+        # Initialize results manager
+        self.results_manager = ResultsManager(results_base or config.RESULTS_DIR)
+        self.experiment_dir = os.path.join(
+            self.results_manager.folders['experiments'],
+            experiment_name
+        )
+        os.makedirs(self.experiment_dir, exist_ok=True)
 
     async def run_single_sample(
         self,
@@ -91,29 +113,67 @@ class LoCoMoExperiment:
             print(f"QA Pairs: {sample.total_qa}")
             print(f"{'=' * 60}")
 
-        # Create PCM system for this sample
-        sample_data_dir = os.path.join(self.output_dir, f"sample_{sample_idx}")
-        os.makedirs(sample_data_dir, exist_ok=True)
+        # Create sample-specific results directory
+        sample_results_dir = os.path.join(self.experiment_dir, f"sample_{sample_idx}")
+        os.makedirs(sample_results_dir, exist_ok=True)
 
+        # Create PCM system for this sample with its own results folder
         pcm = create_pcm_system(
-            data_dir=sample_data_dir,
+            results_dir=sample_results_dir,
             use_mock=self.use_mock
+        )
+
+        # Create RawDataStore for preserving original dialogue data
+        raw_store_path = os.path.join(sample_results_dir, "raw_data_store")
+        os.makedirs(raw_store_path, exist_ok=True)
+        raw_store = RawDataStore(
+            storage_path=raw_store_path,
+            collection_name="raw_dialogues",
+            embedding_model=pcm.world_model.embedding_model
+        )
+
+        # Create HybridRetriever
+        hybrid_retriever = HybridRetriever(
+            knowledge_graph=pcm.world_model,
+            raw_store=raw_store,
+            kg_weight=0.4,  # Give more weight to raw data for accuracy
+            raw_weight=0.6
         )
 
         # Ingest dialogues
         if not skip_ingest:
-            await self._ingest_dialogues(pcm, sample, verbose)
+            await self._ingest_dialogues(pcm, sample, raw_store, verbose)
 
         # Answer questions
-        results = await self._answer_questions(pcm, sample, verbose)
+        results = await self._answer_questions(pcm, sample, hybrid_retriever, verbose)
 
-        # Save sample results
-        sample_result_path = os.path.join(sample_data_dir, "results.json")
+        # Save sample results to JSON
+        sample_result_path = os.path.join(sample_results_dir, "results.json")
         with open(sample_result_path, 'w', encoding='utf-8') as f:
             json.dump(results, f, ensure_ascii=False, indent=2)
 
+        # Calculate and save sample statistics
+        sample_statistics = ExperimentStatistics()
+        sample_stats = sample_statistics.analyze_sample(results)
+
+        # Add statistics to results
+        results['statistics'] = sample_stats.to_dict()
+
+        # Save updated results with statistics
+        with open(sample_result_path, 'w', encoding='utf-8') as f:
+            json.dump(results, f, ensure_ascii=False, indent=2)
+
+        # Save separate statistics file
+        stats_path = os.path.join(sample_results_dir, "sample_statistics.json")
+        with open(stats_path, 'w', encoding='utf-8') as f:
+            json.dump(sample_stats.to_dict(), f, ensure_ascii=False, indent=2)
+
         if verbose:
             print(f"\nSample {sample_idx} results saved to {sample_result_path}")
+            print(f"  Exact Match: {sample_stats.exact_match*100:.2f}%")
+            print(f"  Contains Match: {sample_stats.contains_match*100:.2f}%")
+            print(f"  Token F1: {sample_stats.token_f1*100:.2f}%")
+            print(f"  No-Info Rate: {sample_stats.no_info_count}/{sample_stats.total_questions}")
 
         return results
 
@@ -121,16 +181,39 @@ class LoCoMoExperiment:
         self,
         pcm: PCMSystem,
         sample: LoCoMoSample,
+        raw_store: RawDataStore,
         verbose: bool
     ) -> None:
-        """Ingest all dialogues from a sample into the memory system."""
+        """Ingest all dialogues from a sample into both memory systems."""
         if verbose:
             print("\nIngesting dialogues into memory...")
 
         dialogues = process_dialogues_for_memory(sample)
         speaker_a = sample.speaker_a
 
-        for i, dialogue in enumerate(tqdm(dialogues, desc="Ingesting", disable=not verbose)):
+        # Prepare raw dialogues for batch insertion
+        raw_dialogues = []
+        for i, dialogue in enumerate(dialogues):
+            raw_dialogues.append({
+                'session_id': dialogue.get('session_id', 'default'),
+                'turn_index': i,
+                'speaker': dialogue['speaker'],
+                'text': dialogue['message'],
+                'timestamp': dialogue.get('timestamp'),
+                'metadata': {
+                    'is_user': dialogue['is_user'],
+                    'sample_id': sample.sample_id,
+                    'session_idx': dialogue.get('session_idx', 0)
+                }
+            })
+
+        # Batch add to raw store
+        raw_store.add_dialogues_batch(raw_dialogues, auto_save=True)
+        if verbose:
+            print(f"Added {len(raw_dialogues)} raw dialogues to RawDataStore")
+
+        # Also add to knowledge graph
+        for i, dialogue in enumerate(tqdm(dialogues, desc="Ingesting to KG", disable=not verbose)):
             # Add to world model
             content = f"[{dialogue['timestamp']}] {dialogue['speaker']}: {dialogue['message']}"
 
@@ -163,9 +246,10 @@ class LoCoMoExperiment:
         self,
         pcm: PCMSystem,
         sample: LoCoMoSample,
+        hybrid_retriever: HybridRetriever,
         verbose: bool
     ) -> Dict[str, Any]:
-        """Answer all QA questions for a sample."""
+        """Answer all QA questions for a sample using hybrid retrieval."""
         if verbose:
             print("\nAnswering questions...")
 
@@ -178,13 +262,18 @@ class LoCoMoExperiment:
         }
 
         for i, qa in enumerate(tqdm(sample.qa_pairs, desc="QA", disable=not verbose)):
-            # Retrieve relevant context
-            relevant = pcm.query_knowledge(qa.question, top_k=10)
+            # Use hybrid retrieval for better context
+            retrieval_result = hybrid_retriever.retrieve(
+                query=qa.question,
+                top_k=10,
+                include_context=True,
+                context_window=2
+            )
 
-            # Build context for answer generation
+            # Build context from merged results
             context_str = "\n".join([
-                f"- {item['content'][:200]}"
-                for item in relevant[:5]
+                f"- {content[:300]}"
+                for content in retrieval_result['merged_context'][:8]
             ])
 
             # Generate answer using PCM
@@ -218,7 +307,7 @@ For durations, use format like "4 years" or "3 months".
                 category=qa.category
             )
 
-            # Record result
+            # Record result with both KG and raw retrieval info
             qa_result = {
                 "question": qa.question,
                 "reference_answer": qa.answer,
@@ -227,7 +316,11 @@ For durations, use format like "4 years" or "3 months".
                 "category_name": qa.category_name,
                 "evidence": qa.evidence,
                 "metrics": metrics,
-                "retrieved_context": [item['content'][:100] for item in relevant[:3]]
+                "retrieved_context": retrieval_result['merged_context'][:5],
+                "retrieval_stats": {
+                    "kg_count": retrieval_result['kg_count'],
+                    "raw_count": retrieval_result['raw_count']
+                }
             }
             results["qa_results"].append(qa_result)
 
@@ -270,9 +363,9 @@ For durations, use format like "4 years" or "3 months".
         n_samples = min(len(self.dataset), max_samples) if max_samples else len(self.dataset)
 
         print(f"\n{'=' * 60}")
-        print(f"Running LoComo Experiment")
+        print(f"Running LoComo Experiment: {self.experiment_name}")
         print(f"Samples: {n_samples}, Mock: {self.use_mock}")
-        print(f"Output: {self.output_dir}")
+        print(f"Results directory: {self.experiment_dir}")
         print(f"{'=' * 60}")
 
         all_results = []
@@ -293,10 +386,11 @@ For durations, use format like "4 years" or "3 months".
         # Aggregate results
         aggregate = self.evaluator.get_aggregate_metrics()
 
-        # Save aggregate results
-        aggregate_path = os.path.join(self.output_dir, "aggregate_results.json")
+        # Save aggregate results to JSON
+        aggregate_path = os.path.join(self.experiment_dir, "aggregate_results.json")
         with open(aggregate_path, 'w', encoding='utf-8') as f:
             json.dump({
+                "experiment_name": self.experiment_name,
                 "aggregate": aggregate,
                 "config": {
                     "use_mock": self.use_mock,
@@ -308,10 +402,17 @@ For durations, use format like "4 years" or "3 months".
         # Print summary
         self.evaluator.print_summary()
 
-        # Save detailed results
-        self.evaluator.save_results(
-            os.path.join(self.output_dir, "detailed_results.json")
-        )
+        # Save detailed results to JSON
+        detailed_path = os.path.join(self.experiment_dir, "detailed_results.json")
+        self.evaluator.save_results(detailed_path)
+
+        # Generate comprehensive statistics report
+        print("\n" + "=" * 60)
+        print("GENERATING COMPREHENSIVE STATISTICS REPORT")
+        print("=" * 60)
+        overall_stats = analyze_experiment_results(self.experiment_dir, save_report=True)
+
+        print(f"\nResults saved to: {self.experiment_dir}")
 
         return aggregate
 
@@ -322,15 +423,29 @@ async def main():
     parser.add_argument("--max-samples", type=int, default=None, help="Maximum samples to process")
     parser.add_argument("--mock", action="store_true", help="Use mock LLM")
     parser.add_argument("--skip-ingest", action="store_true", help="Skip memory ingestion")
-    parser.add_argument("--output", type=str, default="./experiment_results", help="Output directory")
+    parser.add_argument("--stats-only", action="store_true", help="Only run statistics on existing results")
+    parser.add_argument("--name", type=str, default="locomo_experiment", help="Experiment name")
+    parser.add_argument("--results-dir", type=str, default=None, help="Results base directory")
     args = parser.parse_args()
 
     # Set mock mode
     if args.mock:
         config.USE_MOCK_LLM = True
 
+    # Handle stats-only mode
+    if args.stats_only:
+        results_base = args.results_dir or config.RESULTS_DIR
+        experiment_dir = os.path.join(results_base, 'experiments', args.name)
+        if not os.path.exists(experiment_dir):
+            print(f"Error: Experiment directory not found: {experiment_dir}")
+            return
+        print(f"Running statistics on: {experiment_dir}")
+        analyze_experiment_results(experiment_dir, save_report=True)
+        return
+
     experiment = LoCoMoExperiment(
-        output_dir=args.output,
+        experiment_name=args.name,
+        results_base=args.results_dir,
         use_mock=args.mock
     )
 

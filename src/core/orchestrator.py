@@ -4,9 +4,11 @@ PCM System Orchestrator
 Central orchestrator that connects L1 (Perception), L2 (World Model), and L3 (Evolution).
 
 This is the main entry point for interacting with the PCM system.
+All results are saved to the unified results folder in JSON format.
 """
 
 import os
+import json
 from typing import Optional, Dict, Any, List, Tuple
 from datetime import datetime
 
@@ -20,6 +22,7 @@ from src.layers.layer1_perception import PerceptionLayer
 from src.layers.layer2_world_model import WeightedKnowledgeGraph
 from src.layers.layer3_evolution import CognitiveEngine
 from src.utils.llm_client import LLMClient, get_llm_client
+from src.utils.json_storage import ResultsManager
 
 
 class PCMSystem:
@@ -35,12 +38,15 @@ class PCMSystem:
     1. L1 receives input, classifies intent, calculates surprisal
     2. L2 retrieves relevant context using intent-masked retrieval
     3. L3 evolves the world model based on surprisal levels
+
+    All data is stored locally in JSON format in the unified results folder.
     """
 
     def __init__(
         self,
+        results_base: Optional[str] = None,
         graph_path: Optional[str] = None,
-        chroma_path: Optional[str] = None,
+        vector_store_path: Optional[str] = None,
         max_context_tokens: int = None,
         use_mock: bool = False
     ):
@@ -48,18 +54,23 @@ class PCMSystem:
         Initialize the PCM system.
 
         Args:
-            graph_path: Path for graph persistence
-            chroma_path: Path for vector DB persistence
+            results_base: Base path for unified results folder
+            graph_path: Path for graph persistence (JSON format)
+            vector_store_path: Path for vector store (JSON format)
             max_context_tokens: Maximum tokens in working memory
             use_mock: Use mock components for testing
         """
         self.use_mock = use_mock or config.USE_MOCK_LLM
 
+        # Initialize results manager for unified storage
+        self.results_manager = ResultsManager(results_base or config.RESULTS_DIR)
+
         # Initialize Layer 2 first (it's the foundation)
         print("Initializing Layer 2: World Model...")
         self.world_model = WeightedKnowledgeGraph(
             graph_path=graph_path,
-            chroma_path=chroma_path
+            vector_store_path=vector_store_path,
+            results_base=results_base or config.RESULTS_DIR
         )
 
         # Initialize Layer 1
@@ -80,6 +91,7 @@ class PCMSystem:
         self._interaction_count = 0
 
         print("PCM System initialized successfully!")
+        print(f"Results directory: {self.results_manager.base_path}")
 
     async def process_input(
         self,
@@ -154,7 +166,8 @@ class PCMSystem:
         # === Step 7: Save State ===
         self.world_model.save()
 
-        return {
+        # Build result dictionary
+        result = {
             "interaction_id": self._interaction_count,
             "timestamp": timestamp.isoformat(),
             "user_input": user_input,
@@ -182,6 +195,14 @@ class PCMSystem:
             "response": response,
             "evicted_data": evicted.to_text() if evicted else None
         }
+
+        # Save intermediate result to JSON
+        self.results_manager.save_intermediate(
+            name=f"interaction_{self._interaction_count}",
+            data=result
+        )
+
+        return result
 
     async def _process_evicted_data(self, evicted: EvictedData) -> None:
         """
@@ -312,26 +333,33 @@ Respond helpfully, utilizing relevant context when appropriate. If the context h
 
 # Convenience function for quick initialization
 def create_pcm_system(
-    data_dir: Optional[str] = None,
+    results_dir: Optional[str] = None,
     use_mock: bool = False
 ) -> PCMSystem:
     """
     Create a PCM system with default paths.
 
+    All data is stored in the unified results folder:
+    - results/
+      - knowledge_graphs/   # Graph storage (JSON)
+      - vector_stores/      # Vector embeddings (JSON)
+      - experiments/        # Experiment results
+      - intermediate/       # Intermediate processing files
+      - logs/               # Processing logs
+
     Args:
-        data_dir: Base directory for data storage
+        results_dir: Base directory for results storage (default: ./results)
         use_mock: Use mock components for testing
 
     Returns:
         Initialized PCMSystem
     """
-    if data_dir is None:
-        data_dir = config.DATA_DIR
+    if results_dir is None:
+        results_dir = config.RESULTS_DIR
 
-    os.makedirs(data_dir, exist_ok=True)
+    os.makedirs(results_dir, exist_ok=True)
 
     return PCMSystem(
-        graph_path=os.path.join(data_dir, "knowledge_graph.gml"),
-        chroma_path=os.path.join(data_dir, "chroma_db"),
+        results_base=results_dir,
         use_mock=use_mock
     )

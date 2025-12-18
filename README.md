@@ -24,6 +24,7 @@
 - [配置说明](#配置说明)
 - [评估框架](#评估框架)
 - [项目结构](#项目结构)
+- [核心模块说明](#核心模块说明)
 
 ---
 
@@ -564,18 +565,53 @@ python main.py --scenario
 python main.py --mock
 ```
 
-### 4. 运行 LoComo 评估
+### 4. 运行 LoComo 评估实验
 
 ```bash
-# 运行单个样本
+# 运行单个样本（推荐首次测试）
 python src/evaluation/run_experiment.py --sample 0
 
 # 运行所有样本
 python src/evaluation/run_experiment.py
 
-# Mock 模式测试
+# 运行指定数量的样本
+python src/evaluation/run_experiment.py --max-samples 3
+
+# Mock 模式测试（不调用 API）
 python src/evaluation/run_experiment.py --mock --max-samples 2
+
+# 跳过数据摄入（使用缓存的知识图谱）
+python src/evaluation/run_experiment.py --sample 0 --skip-ingest
+
+# 指定实验名称
+python src/evaluation/run_experiment.py --name my_experiment
 ```
+
+### 5. 运行统计分析
+
+实验完成后会自动生成统计报告，也可以单独运行分析：
+
+```bash
+# 对已有实验结果运行统计分析
+python src/evaluation/run_experiment.py --stats-only
+
+# 指定实验名称进行分析
+python src/evaluation/run_experiment.py --stats-only --name my_experiment
+
+# 或直接使用统计模块
+python src/evaluation/statistics.py --dir results/experiments/locomo_experiment
+```
+
+**输出文件**：
+- `results/experiments/{name}/statistics.json` - 详细 JSON 统计数据
+- `results/experiments/{name}/statistics_report.txt` - 人类可读的文本报告
+- `results/experiments/{name}/sample_X/sample_statistics.json` - 单样本统计
+
+**统计内容**：
+- 精确匹配率 (Exact Match)、包含匹配率、Token F1、BLEU
+- 按问题类别分别统计（temporal/single-hop/multi-hop/adversarial）
+- 失败原因分析：无信息率、错误信息率、格式差异率
+- 检索质量统计
 
 ---
 
@@ -626,9 +662,21 @@ ProCoMemory/
 ├── README.md                # 本文档
 │
 ├── data/
-│   ├── locomo10.json        # LoComo 数据集
-│   ├── knowledge_graph.gml  # 持久化图数据
-│   └── chroma_db/           # 向量数据库
+│   └── locomo10.json        # LoComo 数据集
+│
+├── results/                 # 统一结果目录
+│   ├── knowledge_graphs/    # 图存储 (JSON)
+│   ├── vector_stores/       # 向量嵌入 (JSON)
+│   ├── experiments/         # 实验结果
+│   │   └── locomo_experiment/
+│   │       ├── sample_0/
+│   │       │   ├── results.json           # 详细QA结果
+│   │       │   ├── sample_statistics.json # 样本统计
+│   │       │   └── raw_data_store/        # 原始数据存储
+│   │       ├── statistics.json            # 整体统计(JSON)
+│   │       └── statistics_report.txt      # 统计报告(文本)
+│   ├── intermediate/        # 中间处理文件
+│   └── logs/                # 处理日志
 │
 └── src/
     ├── __init__.py
@@ -646,14 +694,78 @@ ProCoMemory/
     │
     ├── utils/
     │   ├── __init__.py
-    │   ├── llm_client.py    # OpenAI API 封装
-    │   ├── math_utils.py    # 数学公式实现
-    │   └── metrics.py       # 惊奇度计算
+    │   ├── llm_client.py      # OpenAI API 封装
+    │   ├── math_utils.py      # 数学公式实现
+    │   ├── json_storage.py    # JSON向量存储 (替代ChromaDB)
+    │   └── raw_data_store.py  # 原始数据存储与混合检索
     │
     └── evaluation/
         ├── __init__.py
-        ├── dataset.py       # LoComo 数据集加载器
-        ├── metrics.py       # 评估指标
-        └── run_experiment.py # 实验运行器
+        ├── dataset.py         # LoComo 数据集加载器
+        ├── metrics.py         # 评估指标
+        ├── statistics.py      # 统计分析模块
+        └── run_experiment.py  # 实验运行器
+```
+
+---
+
+## 核心模块说明
+
+### RawDataStore (原始数据存储)
+
+解决知识图谱处理过程中的信息丢失问题：
+
+```python
+from src.utils.raw_data_store import RawDataStore, HybridRetriever
+
+# 创建原始数据存储
+raw_store = RawDataStore(storage_path="./results/raw_data")
+
+# 添加对话
+raw_store.add_dialogue(
+    session_id="session_1",
+    turn_index=0,
+    speaker="Alice",
+    text="My birthday is March 15th.",
+    timestamp="10:00 AM"
+)
+
+# 语义搜索
+results = raw_store.search("When is Alice's birthday?", top_k=5)
+
+# 带上下文的搜索
+results = raw_store.search_with_context("birthday", context_window=2)
+```
+
+### HybridRetriever (混合检索)
+
+同时从知识图谱和原始数据中检索：
+
+```python
+hybrid = HybridRetriever(
+    knowledge_graph=pcm.world_model,
+    raw_store=raw_store,
+    kg_weight=0.4,   # 知识图谱权重
+    raw_weight=0.6   # 原始数据权重（更侧重准确性）
+)
+
+# 混合检索
+results = hybrid.retrieve(query="Where did Alice travel?", top_k=10)
+# 返回: {'kg_results': [...], 'raw_results': [...], 'merged_context': [...]}
+```
+
+### ExperimentStatistics (统计分析)
+
+```python
+from src.evaluation.statistics import analyze_experiment_results
+
+# 分析实验结果
+stats = analyze_experiment_results("results/experiments/locomo_experiment")
+
+# 输出示例：
+# Exact Match:    9.05%
+# Contains Match: 17.09%
+# Token F1:       24.50%
+# No-Info Rate:   31.16%
 ```
 

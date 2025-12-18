@@ -1,1 +1,60 @@
+# IDE
 /.idea/
+/.claude/
+/.vscode/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+.env
+.venv
+env/
+venv/
+ENV/
+
+# Results and data (generated files)
+/results/
+/data/chroma_db/
+/data/knowledge_graph.gml
+/experiment_results/
+
+# Keep data folder but ignore generated files
+!/data/
+/data/*.json
+!/data/locomo10.json
+
+# Logs
+*.log
+logs/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Secrets (never commit)
+*.env.local
+.env.production
+credentials.json

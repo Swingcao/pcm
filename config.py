@@ -154,9 +154,13 @@ if "intent_domains" in config and isinstance(config["intent_domains"], list):
 
 _base_dir = os.path.dirname(__file__)
 DATA_DIR = _get("paths", "data_dir", os.path.join(_base_dir, "data"))
-GRAPH_SAVE_PATH = _get("paths", "graph_save", os.path.join(DATA_DIR, "knowledge_graph.gml"))
-CHROMA_PERSIST_DIR = _get("paths", "chroma_persist", os.path.join(DATA_DIR, "chroma_db"))
+RESULTS_DIR = _get("paths", "results_dir", os.path.join(_base_dir, "results"))
+GRAPH_SAVE_PATH = _get("paths", "graph_save", os.path.join(RESULTS_DIR, "knowledge_graphs", "knowledge_graph.json"))
+VECTOR_STORE_DIR = _get("paths", "vector_store", os.path.join(RESULTS_DIR, "vector_stores"))
 DATASET_PATH = _get("paths", "dataset", os.path.join(DATA_DIR, "locomo10.json"))
+
+# Legacy path for backwards compatibility
+CHROMA_PERSIST_DIR = _get("paths", "chroma_persist", os.path.join(DATA_DIR, "chroma_db"))
 
 
 # =============================================================================
@@ -198,6 +202,9 @@ def get_config() -> Dict[str, Any]:
         },
         "paths": {
             "data_dir": DATA_DIR,
+            "results_dir": RESULTS_DIR,
+            "graph_save": GRAPH_SAVE_PATH,
+            "vector_store": VECTOR_STORE_DIR,
             "dataset": DATASET_PATH,
         },
         "debug": {

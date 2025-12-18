@@ -41,9 +41,11 @@ class MemoryNode(BaseModel):
 
     def to_graph_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for NetworkX serialization."""
+        # Handle both enum and string node_type (due to Pydantic use_enum_values)
+        node_type_value = self.node_type.value if isinstance(self.node_type, NodeType) else self.node_type
         return {
             "content": self.content,
-            "node_type": self.node_type.value,
+            "node_type": node_type_value,
             "domain": self.domain,
             "weight": self.weight,
             "created_at": self.created_at.isoformat(),
