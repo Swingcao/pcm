@@ -76,7 +76,13 @@ class WeightedKnowledgeGraph:
         # Initialize embedding model
         if embedding_model is None:
             device = 'cuda' if __import__('torch').cuda.is_available() else 'cpu'
-            self.embedding_model = SentenceTransformer(config.EMBEDDING_MODEL_ID).to(device)
+            # Try to load from local path first if configured
+            if config.EMBEDDING_USE_LOCAL and os.path.exists(config.EMBEDDING_LOCAL_PATH):
+                print(f"Loading embedding model from local path: {config.EMBEDDING_LOCAL_PATH}")
+                self.embedding_model = SentenceTransformer(config.EMBEDDING_LOCAL_PATH).to(device)
+            else:
+                print(f"Loading embedding model from Hugging Face: {config.EMBEDDING_MODEL_ID}")
+                self.embedding_model = SentenceTransformer(config.EMBEDDING_MODEL_ID).to(device)
         else:
             self.embedding_model = embedding_model
 
@@ -603,3 +609,36 @@ class WeightedKnowledgeGraph:
             for n in self.graph.nodes()
         ]
         return sum(weights) / len(weights)
+
+
+# =============================================================================
+# Singleton Embedding Model
+# =============================================================================
+
+_embedding_model: Optional[SentenceTransformer] = None
+
+
+def get_embedding_model() -> SentenceTransformer:
+    """
+    Get the singleton embedding model instance.
+
+    Uses local model if available and configured, otherwise falls back to HuggingFace.
+
+    Returns:
+        SentenceTransformer model instance
+    """
+    global _embedding_model
+
+    if _embedding_model is None:
+        import torch
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+        # Try to load from local path first if configured
+        if config.EMBEDDING_USE_LOCAL and os.path.exists(config.EMBEDDING_LOCAL_PATH):
+            print(f"Loading embedding model from local path: {config.EMBEDDING_LOCAL_PATH}")
+            _embedding_model = SentenceTransformer(config.EMBEDDING_LOCAL_PATH).to(device)
+        else:
+            print(f"Loading embedding model from Hugging Face: {config.EMBEDDING_MODEL_ID}")
+            _embedding_model = SentenceTransformer(config.EMBEDDING_MODEL_ID).to(device)
+
+    return _embedding_model

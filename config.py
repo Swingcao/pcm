@@ -85,7 +85,13 @@ ROUTER_LLM_MODEL = _get("model", "router_model", "gpt-4o-mini")
 # Embedding Model Configuration
 # =============================================================================
 
+# Local model path (relative to project root)
+_base_dir_for_models = os.path.dirname(__file__)
+_default_local_model_path = os.path.join(_base_dir_for_models, "models", "all-MiniLM-L6-v2")
+
 EMBEDDING_MODEL_ID = _get("embedding", "model_id", "sentence-transformers/all-MiniLM-L6-v2")
+EMBEDDING_LOCAL_PATH = _get("embedding", "local_path", _default_local_model_path)
+EMBEDDING_USE_LOCAL = _get("embedding", "use_local", True)  # Default to use local model
 EMBEDDING_DIMENSION = _get("embedding", "dimension", 384)
 
 
@@ -188,6 +194,8 @@ def get_config() -> Dict[str, Any]:
         },
         "embedding": {
             "model_id": EMBEDDING_MODEL_ID,
+            "local_path": EMBEDDING_LOCAL_PATH,
+            "use_local": EMBEDDING_USE_LOCAL,
             "dimension": EMBEDDING_DIMENSION,
         },
         "thresholds": {
