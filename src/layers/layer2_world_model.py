@@ -33,24 +33,6 @@ from src.utils.math_utils import (
 from src.utils.json_storage import JSONVectorStore, ResultsManager
 
 
-# Global embedding model instance (lazy loaded)
-_embedding_model = None
-
-
-def get_embedding_model() -> SentenceTransformer:
-    """
-    Get or create a shared embedding model instance.
-
-    Returns:
-        SentenceTransformer model
-    """
-    global _embedding_model
-    if _embedding_model is None:
-        device = 'cuda' if __import__('torch').cuda.is_available() else 'cpu'
-        _embedding_model = SentenceTransformer(config.EMBEDDING_MODEL_ID).to(device)
-    return _embedding_model
-
-
 class WeightedKnowledgeGraph:
     """
     Layer 2: Probabilistic World Model

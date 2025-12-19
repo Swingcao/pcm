@@ -32,8 +32,6 @@ from src.core.types import NodeType
 from src.evaluation.dataset import LoCoMoDataset, LoCoMoSample, load_locomo, process_dialogues_for_memory
 from src.evaluation.metrics import LoCoMoEvaluator
 from src.utils.json_storage import ResultsManager
-from src.utils.raw_data_store import RawDataStore, HybridRetriever
-from src.evaluation.statistics import ExperimentStatistics, analyze_experiment_results
 
 
 class LoCoMoExperiment:
@@ -123,57 +121,20 @@ class LoCoMoExperiment:
             use_mock=self.use_mock
         )
 
-        # Create RawDataStore for preserving original dialogue data
-        raw_store_path = os.path.join(sample_results_dir, "raw_data_store")
-        os.makedirs(raw_store_path, exist_ok=True)
-        raw_store = RawDataStore(
-            storage_path=raw_store_path,
-            collection_name="raw_dialogues",
-            embedding_model=pcm.world_model.embedding_model
-        )
-
-        # Create HybridRetriever
-        hybrid_retriever = HybridRetriever(
-            knowledge_graph=pcm.world_model,
-            raw_store=raw_store,
-            kg_weight=0.4,  # Give more weight to raw data for accuracy
-            raw_weight=0.6
-        )
-
         # Ingest dialogues
         if not skip_ingest:
-            await self._ingest_dialogues(pcm, sample, raw_store, verbose)
+            await self._ingest_dialogues(pcm, sample, verbose)
 
         # Answer questions
-        results = await self._answer_questions(pcm, sample, hybrid_retriever, verbose)
+        results = await self._answer_questions(pcm, sample, verbose)
 
         # Save sample results to JSON
         sample_result_path = os.path.join(sample_results_dir, "results.json")
         with open(sample_result_path, 'w', encoding='utf-8') as f:
             json.dump(results, f, ensure_ascii=False, indent=2)
 
-        # Calculate and save sample statistics
-        sample_statistics = ExperimentStatistics()
-        sample_stats = sample_statistics.analyze_sample(results)
-
-        # Add statistics to results
-        results['statistics'] = sample_stats.to_dict()
-
-        # Save updated results with statistics
-        with open(sample_result_path, 'w', encoding='utf-8') as f:
-            json.dump(results, f, ensure_ascii=False, indent=2)
-
-        # Save separate statistics file
-        stats_path = os.path.join(sample_results_dir, "sample_statistics.json")
-        with open(stats_path, 'w', encoding='utf-8') as f:
-            json.dump(sample_stats.to_dict(), f, ensure_ascii=False, indent=2)
-
         if verbose:
             print(f"\nSample {sample_idx} results saved to {sample_result_path}")
-            print(f"  Exact Match: {sample_stats.exact_match*100:.2f}%")
-            print(f"  Contains Match: {sample_stats.contains_match*100:.2f}%")
-            print(f"  Token F1: {sample_stats.token_f1*100:.2f}%")
-            print(f"  No-Info Rate: {sample_stats.no_info_count}/{sample_stats.total_questions}")
 
         return results
 
@@ -181,39 +142,16 @@ class LoCoMoExperiment:
         self,
         pcm: PCMSystem,
         sample: LoCoMoSample,
-        raw_store: RawDataStore,
         verbose: bool
     ) -> None:
-        """Ingest all dialogues from a sample into both memory systems."""
+        """Ingest all dialogues from a sample into the memory system."""
         if verbose:
             print("\nIngesting dialogues into memory...")
 
         dialogues = process_dialogues_for_memory(sample)
         speaker_a = sample.speaker_a
 
-        # Prepare raw dialogues for batch insertion
-        raw_dialogues = []
-        for i, dialogue in enumerate(dialogues):
-            raw_dialogues.append({
-                'session_id': dialogue.get('session_id', 'default'),
-                'turn_index': i,
-                'speaker': dialogue['speaker'],
-                'text': dialogue['message'],
-                'timestamp': dialogue.get('timestamp'),
-                'metadata': {
-                    'is_user': dialogue['is_user'],
-                    'sample_id': sample.sample_id,
-                    'session_idx': dialogue.get('session_idx', 0)
-                }
-            })
-
-        # Batch add to raw store
-        raw_store.add_dialogues_batch(raw_dialogues, auto_save=True)
-        if verbose:
-            print(f"Added {len(raw_dialogues)} raw dialogues to RawDataStore")
-
-        # Also add to knowledge graph
-        for i, dialogue in enumerate(tqdm(dialogues, desc="Ingesting to KG", disable=not verbose)):
+        for i, dialogue in enumerate(tqdm(dialogues, desc="Ingesting", disable=not verbose)):
             # Add to world model
             content = f"[{dialogue['timestamp']}] {dialogue['speaker']}: {dialogue['message']}"
 
@@ -246,10 +184,9 @@ class LoCoMoExperiment:
         self,
         pcm: PCMSystem,
         sample: LoCoMoSample,
-        hybrid_retriever: HybridRetriever,
         verbose: bool
     ) -> Dict[str, Any]:
-        """Answer all QA questions for a sample using hybrid retrieval."""
+        """Answer all QA questions for a sample."""
         if verbose:
             print("\nAnswering questions...")
 
@@ -262,18 +199,13 @@ class LoCoMoExperiment:
         }
 
         for i, qa in enumerate(tqdm(sample.qa_pairs, desc="QA", disable=not verbose)):
-            # Use hybrid retrieval for better context
-            retrieval_result = hybrid_retriever.retrieve(
-                query=qa.question,
-                top_k=10,
-                include_context=True,
-                context_window=2
-            )
+            # Retrieve relevant context
+            relevant = pcm.query_knowledge(qa.question, top_k=10)
 
-            # Build context from merged results
+            # Build context for answer generation
             context_str = "\n".join([
-                f"- {content[:300]}"
-                for content in retrieval_result['merged_context'][:8]
+                f"- {item['content'][:200]}"
+                for item in relevant[:5]
             ])
 
             # Generate answer using PCM
@@ -307,7 +239,7 @@ For durations, use format like "4 years" or "3 months".
                 category=qa.category
             )
 
-            # Record result with both KG and raw retrieval info
+            # Record result
             qa_result = {
                 "question": qa.question,
                 "reference_answer": qa.answer,
@@ -316,11 +248,7 @@ For durations, use format like "4 years" or "3 months".
                 "category_name": qa.category_name,
                 "evidence": qa.evidence,
                 "metrics": metrics,
-                "retrieved_context": retrieval_result['merged_context'][:5],
-                "retrieval_stats": {
-                    "kg_count": retrieval_result['kg_count'],
-                    "raw_count": retrieval_result['raw_count']
-                }
+                "retrieved_context": [item['content'][:100] for item in relevant[:3]]
             }
             results["qa_results"].append(qa_result)
 
@@ -406,12 +334,6 @@ For durations, use format like "4 years" or "3 months".
         detailed_path = os.path.join(self.experiment_dir, "detailed_results.json")
         self.evaluator.save_results(detailed_path)
 
-        # Generate comprehensive statistics report
-        print("\n" + "=" * 60)
-        print("GENERATING COMPREHENSIVE STATISTICS REPORT")
-        print("=" * 60)
-        overall_stats = analyze_experiment_results(self.experiment_dir, save_report=True)
-
         print(f"\nResults saved to: {self.experiment_dir}")
 
         return aggregate
@@ -423,7 +345,6 @@ async def main():
     parser.add_argument("--max-samples", type=int, default=None, help="Maximum samples to process")
     parser.add_argument("--mock", action="store_true", help="Use mock LLM")
     parser.add_argument("--skip-ingest", action="store_true", help="Skip memory ingestion")
-    parser.add_argument("--stats-only", action="store_true", help="Only run statistics on existing results")
     parser.add_argument("--name", type=str, default="locomo_experiment", help="Experiment name")
     parser.add_argument("--results-dir", type=str, default=None, help="Results base directory")
     args = parser.parse_args()
@@ -431,17 +352,6 @@ async def main():
     # Set mock mode
     if args.mock:
         config.USE_MOCK_LLM = True
-
-    # Handle stats-only mode
-    if args.stats_only:
-        results_base = args.results_dir or config.RESULTS_DIR
-        experiment_dir = os.path.join(results_base, 'experiments', args.name)
-        if not os.path.exists(experiment_dir):
-            print(f"Error: Experiment directory not found: {experiment_dir}")
-            return
-        print(f"Running statistics on: {experiment_dir}")
-        analyze_experiment_results(experiment_dir, save_report=True)
-        return
 
     experiment = LoCoMoExperiment(
         experiment_name=args.name,
