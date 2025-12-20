@@ -1,6 +1,6 @@
 """
 Evaluation module for PCM system.
-Contains LoComo benchmark dataset loader, metrics, and experiment runner.
+Contains LoComo benchmark dataset loader, metrics, experiment runner, and analysis tools.
 """
 
 from .dataset import (
@@ -26,6 +26,23 @@ from .metrics import (
 
 from .run_experiment import LoCoMoExperiment
 
+from .analyze_results import (
+    analyze_experiment,
+    compute_f1,
+    compute_bleu1,
+    compute_statistics,
+    load_experiment_results,
+    load_all_qa_pairs
+)
+
+from .advanced_analysis import (
+    compare_experiments,
+    analyze_surprisal_distribution,
+    analyze_errors,
+    load_all_intermediate,
+    generate_visualization_data
+)
+
 __all__ = [
     # Dataset
     "LoCoMoDataset",
@@ -45,5 +62,18 @@ __all__ = [
     "normalize_answer",
     "compute_accuracy",
     # Experiment
-    "LoCoMoExperiment"
+    "LoCoMoExperiment",
+    # Analysis
+    "analyze_experiment",
+    "compute_f1",
+    "compute_bleu1",
+    "compute_statistics",
+    "load_experiment_results",
+    "load_all_qa_pairs",
+    # Advanced Analysis
+    "compare_experiments",
+    "analyze_surprisal_distribution",
+    "analyze_errors",
+    "load_all_intermediate",
+    "generate_visualization_data"
 ]

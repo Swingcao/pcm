@@ -575,6 +575,27 @@ python src/evaluation/run_experiment.py
 
 # Mock 模式测试
 python src/evaluation/run_experiment.py --mock --max-samples 2
+
+# 基础分析                                                                                                               
+  python analyze.py                                                                                                        
+                                                                                                                           
+  # 分析特定实验                                                                                                           
+  python analyze.py --experiment my_experiment                                                                             
+                                                                                                                           
+  # 保存结果到 JSON                                                                                                        
+  python analyze.py --output ./analysis_report.json                                                                        
+                                                                                                                           
+  # 导出为 CSV                                                                                                             
+  python analyze.py --format csv --output ./results.csv                                                                    
+                                                                                                                           
+  # 对比多个实验                                                                                                           
+  python analyze.py --compare exp1 exp2                                                                                    
+                                                                                                                           
+  # Surprisal 分布分析                                                                                                     
+  python analyze.py --surprisal                                                                                            
+                                                                                                                           
+  # 详细错误分析                                                                                                           
+  python analyze.py --errors --error-threshold 0.3
 ```
 
 ---
