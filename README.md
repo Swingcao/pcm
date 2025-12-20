@@ -613,6 +613,84 @@ python src/evaluation/run_experiment.py --mock --max-samples 2
 
 ---
 
+## 混合检索优化 (v1.1)
+
+v1.1 版本新增了**混合检索**功能，结合语义相似度、关键词匹配和图扩展，显著提升简单问答任务的准确率。
+
+### 启用方式
+
+**方式一：通过 config.yaml 配置**
+
+```yaml
+# config.yaml
+hybrid_retrieval:
+  enabled: true              # 启用混合检索 (默认 false)
+  fact_extraction: false     # 启用结构化事实提取
+  edge_creation: false       # 启用自动边创建
+  use_llm: false             # 使用 LLM 进行事实提取 (更准确但更慢)
+
+  # 检索权重配置 (总和应为 1.0)
+  semantic_weight: 0.4       # α: 语义相似度权重
+  keyword_weight: 0.3        # β: 关键词匹配权重 (BM25)
+  graph_weight: 0.2          # γ: 图扩展权重
+  recency_weight: 0.1        # δ: 时间衰减权重
+
+  # 图扩展深度
+  expansion_depth: 1
+
+  # BM25 参数
+  bm25_k1: 1.2
+  bm25_b: 0.75
+```
+
+**方式二：通过环境变量配置**
+
+```bash
+# 启用混合检索
+export USE_HYBRID_RETRIEVAL=true
+
+# 运行评估
+python src/evaluation/run_experiment.py --sample 0
+```
+
+### 检索公式
+
+```
+Score(d) = α × semantic_sim + β × bm25_score + γ × graph_score + δ × recency
+
+默认权重: α=0.4, β=0.3, γ=0.2, δ=0.1
+```
+
+### 推荐配置
+
+| 场景 | semantic | keyword | graph | recency |
+|------|----------|---------|-------|---------|
+| **事实问答** (Single-hop) | 0.3 | **0.5** | 0.15 | 0.05 |
+| **多跳推理** (Multi-hop) | 0.3 | 0.3 | **0.35** | 0.05 |
+| **时间问题** (Temporal) | 0.4 | 0.3 | 0.2 | 0.1 |
+| **默认均衡** | 0.4 | 0.3 | 0.2 | 0.1 |
+
+### 新增模块
+
+| 模块 | 文件 | 功能 |
+|------|------|------|
+| **FactExtractor** | `utils/fact_extractor.py` | 从对话中提取结构化事实 |
+| **InvertedIndex** | `utils/keyword_index.py` | BM25 关键词索引 |
+| **EdgeCreator** | `utils/edge_creator.py` | 自动创建知识图谱边 |
+| **HybridRetriever** | `utils/hybrid_retriever.py` | 混合检索器 |
+
+### 对比原有方式
+
+```
+原有检索 (USE_HYBRID_RETRIEVAL=false):
+  Score = sim(embedding) × intent_relevance × weight
+
+混合检索 (USE_HYBRID_RETRIEVAL=true):
+  Score = α×semantic + β×keyword + γ×graph + δ×recency
+```
+
+---
+
 ## 评估框架
 
 ### LoComo Benchmark
@@ -669,7 +747,12 @@ ProCoMemory/
     │   ├── __init__.py
     │   ├── llm_client.py    # OpenAI API 封装
     │   ├── math_utils.py    # 数学公式实现
-    │   └── metrics.py       # 惊奇度计算
+    │   ├── metrics.py       # 惊奇度计算
+    │   ├── json_storage.py  # JSON 向量存储
+    │   ├── fact_extractor.py    # [v1.1] 结构化事实提取
+    │   ├── keyword_index.py     # [v1.1] BM25 关键词索引
+    │   ├── edge_creator.py      # [v1.1] 知识图谱边创建
+    │   └── hybrid_retriever.py  # [v1.1] 混合检索器
     │
     └── evaluation/
         ├── __init__.py

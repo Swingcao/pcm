@@ -7,6 +7,7 @@ This layer maintains:
 1. NetworkX DiGraph for structural relationships
 2. JSON-based vector storage for semantic retrieval (replaces ChromaDB)
 3. Soft update mechanisms for Bayesian confidence weights
+4. [v1.1] Optional hybrid retrieval (semantic + keyword + graph)
 
 All data is stored locally in JSON format for easy inspection and portability.
 """
@@ -31,6 +32,15 @@ from src.utils.math_utils import (
     cosine_similarity, compute_retrieval_entropy
 )
 from src.utils.json_storage import JSONVectorStore, ResultsManager
+
+# v1.1 Optimization modules (conditionally imported)
+if config.USE_HYBRID_RETRIEVAL:
+    from src.utils.hybrid_retriever import HybridRetriever, RetrievalConfig
+    from src.utils.keyword_index import InvertedIndex
+if config.USE_EDGE_CREATION:
+    from src.utils.edge_creator import EdgeCreator, create_edges_sync
+if config.USE_FACT_EXTRACTION:
+    from src.utils.fact_extractor import FactExtractor
 
 
 class WeightedKnowledgeGraph:
@@ -95,6 +105,28 @@ class WeightedKnowledgeGraph:
         # In-memory node cache for quick access
         self._node_cache: Dict[str, MemoryNode] = {}
 
+        # v1.1: Initialize hybrid retriever if enabled
+        self._use_hybrid = config.USE_HYBRID_RETRIEVAL
+        self._hybrid_retriever: Optional[Any] = None
+        self._keyword_index: Optional[Any] = None
+        self._embeddings_cache: Dict[str, List[float]] = {}
+
+        if self._use_hybrid:
+            print("[v1.1] Hybrid retrieval enabled - initializing keyword index...")
+            retrieval_config = RetrievalConfig(
+                semantic_weight=config.HYBRID_SEMANTIC_WEIGHT,
+                keyword_weight=config.HYBRID_KEYWORD_WEIGHT,
+                graph_weight=config.HYBRID_GRAPH_WEIGHT,
+                recency_weight=config.HYBRID_RECENCY_WEIGHT,
+                expansion_depth=config.HYBRID_EXPANSION_DEPTH,
+                bm25_k1=config.BM25_K1,
+                bm25_b=config.BM25_B,
+                top_k=config.RETRIEVAL_TOP_K,
+                min_weight=config.RETRIEVAL_MIN_SCORE
+            )
+            self._hybrid_retriever = HybridRetriever(config=retrieval_config)
+            self._keyword_index = InvertedIndex()
+
         # Load existing graph if available
         self._load_graph()
 
@@ -135,6 +167,16 @@ class WeightedKnowledgeGraph:
         # Update cache
         self._node_cache[node.id] = node
 
+        # v1.1: Add to hybrid retriever if enabled
+        if self._use_hybrid and self._hybrid_retriever:
+            self._embeddings_cache[node.id] = embedding
+            self._hybrid_retriever.add_node(node, embedding)
+            self._keyword_index.add_document(
+                doc_id=node.id,
+                content=node.content,
+                metadata={"domain": node.domain, "weight": node.weight}
+            )
+
         return node.id
 
     def add_edge(
@@ -168,6 +210,10 @@ class WeightedKnowledgeGraph:
             target_id,
             **edge.to_graph_dict()
         )
+
+        # v1.1: Add edge to hybrid retriever if enabled
+        if self._use_hybrid and self._hybrid_retriever:
+            self._hybrid_retriever.add_edge(source_id, target_id, weight)
 
         return edge
 
@@ -288,7 +334,10 @@ class WeightedKnowledgeGraph:
         """
         Intent-masked retrieval from the knowledge graph.
 
-        Score(ε_k) = sim(emb(u_t), emb(ε_k)) * P(d(ε_k) | u_t) * w_k
+        When USE_HYBRID_RETRIEVAL=True:
+            Score = α×semantic + β×keyword + γ×graph + δ×recency
+        When USE_HYBRID_RETRIEVAL=False (default):
+            Score(ε_k) = sim(emb(u_t), emb(ε_k)) * P(d(ε_k) | u_t) * w_k
 
         Args:
             query: Query text
@@ -301,6 +350,54 @@ class WeightedKnowledgeGraph:
         """
         if top_k is None:
             top_k = config.RETRIEVAL_TOP_K
+
+        # v1.1: Use hybrid retrieval if enabled
+        if self._use_hybrid and self._hybrid_retriever:
+            return self._hybrid_retrieve(query, intent, top_k, min_weight)
+
+        # Original embedding-only retrieval
+        return self._semantic_retrieve(query, intent, top_k, min_weight)
+
+    def _hybrid_retrieve(
+        self,
+        query: str,
+        intent: Optional[Intent] = None,
+        top_k: int = 10,
+        min_weight: float = 0.1
+    ) -> Tuple[List[MemoryNode], List[float]]:
+        """
+        v1.1: Hybrid retrieval combining semantic + keyword + graph signals.
+        """
+        # Get query embedding
+        query_embedding = self.embedding_model.encode(query).tolist()
+
+        # Use hybrid retriever
+        results = self._hybrid_retriever.retrieve(
+            query=query,
+            query_embedding=query_embedding,
+            intent=intent,
+            top_k=top_k
+        )
+
+        nodes = [r.node for r in results]
+        scores = [r.final_score for r in results]
+
+        # Update access times for retrieved nodes
+        for node in nodes:
+            self.soft_update_weight(node.id, node.weight)
+
+        return nodes, scores
+
+    def _semantic_retrieve(
+        self,
+        query: str,
+        intent: Optional[Intent] = None,
+        top_k: int = 10,
+        min_weight: float = 0.1
+    ) -> Tuple[List[MemoryNode], List[float]]:
+        """
+        Original semantic-only retrieval (embedding similarity).
+        """
 
         # Get query embedding
         query_embedding = self.embedding_model.encode(query).tolist()
@@ -584,13 +681,21 @@ class WeightedKnowledgeGraph:
 
     def get_statistics(self) -> Dict[str, Any]:
         """Get graph statistics."""
-        return {
+        stats = {
             "num_nodes": self.graph.number_of_nodes(),
             "num_edges": self.graph.number_of_edges(),
             "node_types": self._count_node_types(),
             "avg_weight": self._average_weight(),
-            "vector_count": self.vector_store.count()
+            "vector_count": self.vector_store.count(),
+            "hybrid_retrieval_enabled": self._use_hybrid
         }
+
+        # v1.1: Add hybrid retriever stats if enabled
+        if self._use_hybrid and self._hybrid_retriever:
+            stats["hybrid_retriever"] = self._hybrid_retriever.get_statistics()
+            stats["keyword_index"] = self._keyword_index.get_statistics() if self._keyword_index else {}
+
+        return stats
 
     def _count_node_types(self) -> Dict[str, int]:
         """Count nodes by type."""

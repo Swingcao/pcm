@@ -141,6 +141,46 @@ RETRIEVAL_MIN_SCORE = _get("knowledge_graph", "retrieval_min_score", 0.3)
 
 
 # =============================================================================
+# Hybrid Retrieval Configuration (v1.1 Optimization)
+# =============================================================================
+
+# Master switch: Enable hybrid retrieval (semantic + keyword + graph)
+# When False, uses original embedding-only retrieval
+USE_HYBRID_RETRIEVAL = _get("hybrid_retrieval", "enabled", False, "USE_HYBRID_RETRIEVAL")
+if isinstance(USE_HYBRID_RETRIEVAL, str):
+    USE_HYBRID_RETRIEVAL = USE_HYBRID_RETRIEVAL.lower() == "true"
+
+# Enable structured fact extraction from dialogue
+USE_FACT_EXTRACTION = _get("hybrid_retrieval", "fact_extraction", False)
+if isinstance(USE_FACT_EXTRACTION, str):
+    USE_FACT_EXTRACTION = USE_FACT_EXTRACTION.lower() == "true"
+
+# Enable automatic edge creation in knowledge graph
+USE_EDGE_CREATION = _get("hybrid_retrieval", "edge_creation", False)
+if isinstance(USE_EDGE_CREATION, str):
+    USE_EDGE_CREATION = USE_EDGE_CREATION.lower() == "true"
+
+# Use LLM for fact extraction and contradiction detection (slower but more accurate)
+HYBRID_USE_LLM = _get("hybrid_retrieval", "use_llm", False)
+if isinstance(HYBRID_USE_LLM, str):
+    HYBRID_USE_LLM = HYBRID_USE_LLM.lower() == "true"
+
+# Retrieval weight configuration
+# Score = α×semantic + β×keyword + γ×graph + δ×recency
+HYBRID_SEMANTIC_WEIGHT = _get("hybrid_retrieval", "semantic_weight", 0.4)
+HYBRID_KEYWORD_WEIGHT = _get("hybrid_retrieval", "keyword_weight", 0.3)
+HYBRID_GRAPH_WEIGHT = _get("hybrid_retrieval", "graph_weight", 0.2)
+HYBRID_RECENCY_WEIGHT = _get("hybrid_retrieval", "recency_weight", 0.1)
+
+# Graph expansion depth for multi-hop retrieval
+HYBRID_EXPANSION_DEPTH = _get("hybrid_retrieval", "expansion_depth", 1)
+
+# BM25 parameters
+BM25_K1 = _get("hybrid_retrieval", "bm25_k1", 1.2)
+BM25_B = _get("hybrid_retrieval", "bm25_b", 0.75)
+
+
+# =============================================================================
 # Intent Domains
 # =============================================================================
 
@@ -207,6 +247,19 @@ def get_config() -> Dict[str, Any]:
             "eta": ETA,
             "beta": BETA,
             "gamma": GAMMA,
+        },
+        "hybrid_retrieval": {
+            "enabled": USE_HYBRID_RETRIEVAL,
+            "fact_extraction": USE_FACT_EXTRACTION,
+            "edge_creation": USE_EDGE_CREATION,
+            "use_llm": HYBRID_USE_LLM,
+            "semantic_weight": HYBRID_SEMANTIC_WEIGHT,
+            "keyword_weight": HYBRID_KEYWORD_WEIGHT,
+            "graph_weight": HYBRID_GRAPH_WEIGHT,
+            "recency_weight": HYBRID_RECENCY_WEIGHT,
+            "expansion_depth": HYBRID_EXPANSION_DEPTH,
+            "bm25_k1": BM25_K1,
+            "bm25_b": BM25_B,
         },
         "paths": {
             "data_dir": DATA_DIR,
