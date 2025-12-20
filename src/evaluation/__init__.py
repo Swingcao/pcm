@@ -32,15 +32,16 @@ from .analyze_results import (
     compute_bleu1,
     compute_statistics,
     load_experiment_results,
-    load_all_qa_pairs
+    load_all_qa_pairs,
+    generate_visualization_data,
+    save_results_json
 )
 
 from .advanced_analysis import (
     compare_experiments,
     analyze_surprisal_distribution,
     analyze_errors,
-    load_all_intermediate,
-    generate_visualization_data
+    load_all_intermediate
 )
 
 __all__ = [
@@ -70,10 +71,11 @@ __all__ = [
     "compute_statistics",
     "load_experiment_results",
     "load_all_qa_pairs",
+    "generate_visualization_data",
+    "save_results_json",
     # Advanced Analysis
     "compare_experiments",
     "analyze_surprisal_distribution",
     "analyze_errors",
-    "load_all_intermediate",
-    "generate_visualization_data"
+    "load_all_intermediate"
 ]

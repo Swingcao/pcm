@@ -551,10 +551,107 @@ def print_detailed_errors(
               f"BLEU1={qa['metrics']['bleu1']:.2f}")
 
 
+def generate_visualization_data(stats: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Generate data for visualization (compatible with common charting libraries).
+
+    Args:
+        stats: Statistics from compute_statistics
+
+    Returns:
+        Visualization-ready data
+    """
+    # Metrics over categories
+    categories = []
+    metrics_data = defaultdict(list)
+
+    for cat_name in ["single-hop", "temporal", "multi-hop", "adversarial", "open-domain"]:
+        if cat_name in stats["by_category"]:
+            cat_stats = stats["by_category"][cat_name]
+            categories.append(cat_name)
+            for metric in ["exact_match", "f1", "bleu1", "contains_match", "numeric_match"]:
+                metrics_data[metric].append(cat_stats.get(metric, 0))
+
+    # Sample performance
+    samples = []
+    sample_metrics = defaultdict(list)
+    for sample_id, sample_stats in sorted(stats["by_sample"].items()):
+        samples.append(sample_id)
+        for metric in ["exact_match", "f1", "bleu1"]:
+            sample_metrics[metric].append(sample_stats.get(metric, 0))
+
+    # Score distribution (histogram data)
+    f1_scores = [qa["metrics"]["f1"] for qa in stats["detailed"]]
+    em_scores = [qa["metrics"]["exact_match"] for qa in stats["detailed"]]
+    bleu_scores = [qa["metrics"]["bleu1"] for qa in stats["detailed"]]
+
+    def compute_histogram(scores: List[float], bins: int = 10) -> Dict[str, Any]:
+        """Compute histogram data for scores."""
+        buckets = defaultdict(int)
+        for score in scores:
+            bucket = min(int(score * bins) / bins, (bins - 1) / bins)
+            buckets[bucket] += 1
+
+        sorted_buckets = sorted(buckets.keys())
+        return {
+            "buckets": [f"{b:.1f}-{b + 1/bins:.1f}" for b in sorted_buckets],
+            "counts": [buckets[b] for b in sorted_buckets]
+        }
+
+    # Error analysis data
+    error_by_category = {}
+    for cat_name, cat_stats in stats["by_category"].items():
+        cat_items = [qa for qa in stats["detailed"] if qa["category_name"] == cat_name]
+        errors = [qa for qa in cat_items if qa["metrics"]["f1"] < 0.3]
+        error_by_category[cat_name] = {
+            "total": len(cat_items),
+            "errors": len(errors),
+            "error_rate": len(errors) / len(cat_items) if cat_items else 0
+        }
+
+    return {
+        "category_chart": {
+            "labels": categories,
+            "datasets": [
+                {"label": metric, "data": values}
+                for metric, values in metrics_data.items()
+            ]
+        },
+        "sample_chart": {
+            "labels": samples,
+            "datasets": [
+                {"label": metric, "data": values}
+                for metric, values in sample_metrics.items()
+            ]
+        },
+        "histograms": {
+            "f1": compute_histogram(f1_scores),
+            "exact_match": compute_histogram(em_scores),
+            "bleu1": compute_histogram(bleu_scores)
+        },
+        "error_analysis": error_by_category,
+        "score_distributions": {
+            "f1": {
+                "mean": sum(f1_scores) / len(f1_scores) if f1_scores else 0,
+                "min": min(f1_scores) if f1_scores else 0,
+                "max": max(f1_scores) if f1_scores else 0,
+                "median": sorted(f1_scores)[len(f1_scores) // 2] if f1_scores else 0
+            },
+            "bleu1": {
+                "mean": sum(bleu_scores) / len(bleu_scores) if bleu_scores else 0,
+                "min": min(bleu_scores) if bleu_scores else 0,
+                "max": max(bleu_scores) if bleu_scores else 0,
+                "median": sorted(bleu_scores)[len(bleu_scores) // 2] if bleu_scores else 0
+            }
+        }
+    }
+
+
 def save_results_json(
     stats: Dict[str, Any],
     output_path: str,
-    include_detailed: bool = True
+    include_detailed: bool = True,
+    include_visualization: bool = True
 ) -> None:
     """
     Save results to JSON file.
@@ -563,6 +660,7 @@ def save_results_json(
         stats: Statistics dict
         output_path: Output file path
         include_detailed: Whether to include detailed QA results
+        include_visualization: Whether to include visualization data
     """
     output = {
         "timestamp": datetime.now().isoformat(),
@@ -575,6 +673,9 @@ def save_results_json(
 
     if include_detailed:
         output["detailed"] = stats["detailed"]
+
+    if include_visualization:
+        output["visualization"] = generate_visualization_data(stats)
 
     with open(output_path, 'w', encoding='utf-8') as f:
         json.dump(output, f, ensure_ascii=False, indent=2)
@@ -646,7 +747,9 @@ def analyze_experiment(
     output_path: str = None,
     output_format: str = "json",
     show_errors: bool = True,
-    error_threshold: float = 0.3
+    error_threshold: float = 0.3,
+    auto_save: bool = True,
+    include_visualization: bool = True
 ) -> Dict[str, Any]:
     """
     Main analysis function.
@@ -654,10 +757,12 @@ def analyze_experiment(
     Args:
         results_dir: Base results directory
         experiment_name: Name of experiment to analyze
-        output_path: Output file path (optional)
+        output_path: Output file path (optional, auto-generated if auto_save=True)
         output_format: Output format ("json" or "csv")
         show_errors: Whether to print low-scoring items
         error_threshold: F1 threshold for errors
+        auto_save: Whether to automatically save results
+        include_visualization: Whether to include visualization data in output
 
     Returns:
         Statistics dict
@@ -693,12 +798,23 @@ def analyze_experiment(
     if show_errors:
         print_detailed_errors(stats, threshold=error_threshold)
 
-    # Save results if output path specified
+    # Determine output path
+    if output_path is None and auto_save:
+        # Auto-generate output path in experiment directory
+        exp_dir = os.path.join(experiments_dir, experiment_name)
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        output_path = os.path.join(exp_dir, f"analysis_report_{timestamp}.json")
+
+    # Save results if output path specified or auto_save enabled
     if output_path:
         if output_format == "csv":
             save_results_csv(stats, output_path)
+            # Also save JSON with visualization if requested
+            if include_visualization:
+                json_path = output_path.replace('.csv', '_visualization.json')
+                save_results_json(stats, json_path, include_detailed=False, include_visualization=True)
         else:
-            save_results_json(stats, output_path)
+            save_results_json(stats, output_path, include_detailed=True, include_visualization=include_visualization)
 
     return stats
 
@@ -769,6 +885,18 @@ Examples:
         help="Include detailed QA results in output"
     )
 
+    parser.add_argument(
+        "--no-save",
+        action="store_true",
+        help="Don't auto-save results to file"
+    )
+
+    parser.add_argument(
+        "--no-visualization",
+        action="store_true",
+        help="Don't include visualization data in output"
+    )
+
     args = parser.parse_args()
 
     # Generate default output path if not specified but format is given
@@ -782,7 +910,9 @@ Examples:
         output_path=args.output,
         output_format=args.format,
         show_errors=not args.no_errors,
-        error_threshold=args.error_threshold
+        error_threshold=args.error_threshold,
+        auto_save=not args.no_save,
+        include_visualization=not args.no_visualization
     )
 
     return stats
