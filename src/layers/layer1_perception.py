@@ -26,6 +26,10 @@ from src.utils.llm_client import LLMClient, get_llm_client
 from src.utils.metrics import get_surprisal_calculator, SurprisalCalculator
 from src.utils.math_utils import compute_retrieval_entropy, softmax
 
+# v1.2: Dynamic topic extraction (conditionally imported)
+if config.USE_DYNAMIC_TOPICS:
+    from src.utils.topic_extractor import TopicExtractor, TopicSet, get_topic_extractor
+
 
 class SlidingContextQueue:
     """
@@ -181,6 +185,10 @@ class IntentRouter:
     P(I_t | u_t, Q_t) = Softmax(f_θ(u_t, Q_t))
 
     Used to generate intent mask for L2 retrieval.
+
+    v1.2: Supports dynamic topic discovery (USE_DYNAMIC_TOPICS=True)
+    - When enabled: LLM extracts topics dynamically from content
+    - When disabled: Uses predefined intent_domains for classification
     """
 
     INTENT_PROMPT = """Analyze the user query and classify it into one of these domains:
@@ -205,17 +213,27 @@ The distribution should sum to 1.0 and include all domains."""
     def __init__(
         self,
         llm_client: Optional[LLMClient] = None,
-        domains: Optional[List[str]] = None
+        domains: Optional[List[str]] = None,
+        use_dynamic_topics: Optional[bool] = None
     ):
         """
         Initialize the intent router.
 
         Args:
             llm_client: LLM client for classification
-            domains: List of intent domains
+            domains: List of intent domains (used when use_dynamic_topics=False)
+            use_dynamic_topics: Override config.USE_DYNAMIC_TOPICS
         """
         self.llm_client = llm_client or get_llm_client()
         self.domains = domains or config.INTENT_DOMAINS
+
+        # v1.2: Dynamic topic support
+        self.use_dynamic_topics = use_dynamic_topics if use_dynamic_topics is not None else config.USE_DYNAMIC_TOPICS
+        self._topic_extractor = None
+
+        if self.use_dynamic_topics:
+            print("[v1.2] Dynamic topic discovery enabled")
+            self._topic_extractor = get_topic_extractor()
 
     async def classify(
         self,
@@ -225,6 +243,11 @@ The distribution should sum to 1.0 and include all domains."""
         """
         Classify the intent of a user query.
 
+        When USE_DYNAMIC_TOPICS=True:
+            Extracts topics dynamically and returns them in Intent format
+        When USE_DYNAMIC_TOPICS=False:
+            Uses predefined domains for classification
+
         Args:
             query: User query
             context: Conversation context
@@ -232,6 +255,59 @@ The distribution should sum to 1.0 and include all domains."""
         Returns:
             Intent classification result
         """
+        # v1.2: Use dynamic topic extraction if enabled
+        if self.use_dynamic_topics and self._topic_extractor:
+            return await self._classify_with_dynamic_topics(query, context)
+
+        # Original fixed-domain classification
+        return await self._classify_with_fixed_domains(query, context)
+
+    async def _classify_with_dynamic_topics(
+        self,
+        query: str,
+        context: str = ""
+    ) -> Intent:
+        """
+        v1.2: Classify using dynamic topic extraction.
+
+        Extracts topics from query and converts to Intent format for backward compatibility.
+        """
+        try:
+            topic_set = await self._topic_extractor.extract(query, context)
+
+            # Convert TopicSet to Intent format
+            # Topics become the "distribution" (like domain distribution)
+            distribution = topic_set.topic_weights.copy()
+
+            # Ensure non-empty distribution
+            if not distribution:
+                distribution = {topic_set.primary_topic: 0.8}
+
+            return Intent(
+                label=topic_set.primary_topic,
+                confidence=distribution.get(topic_set.primary_topic, 0.8),
+                distribution=distribution,
+                # Store additional info in a compatible way
+                topics=topic_set.topics,  # Will be ignored by Pydantic if not defined
+                entities=topic_set.entities
+            )
+
+        except Exception as e:
+            print(f"Dynamic topic extraction failed: {e}")
+            # Fallback to simple extraction
+            topic_set = self._topic_extractor.extract_simple(query)
+            return Intent(
+                label=topic_set.primary_topic,
+                confidence=0.5,
+                distribution=topic_set.topic_weights
+            )
+
+    async def _classify_with_fixed_domains(
+        self,
+        query: str,
+        context: str = ""
+    ) -> Intent:
+        """Original fixed-domain classification logic."""
         prompt = self.INTENT_PROMPT.format(
             domains=", ".join(self.domains),
             context=context if context else "(No prior context)",
@@ -282,6 +358,16 @@ The distribution should sum to 1.0 and include all domains."""
 
         Uses keyword matching for fast classification.
         """
+        # v1.2: Use dynamic topic extraction if enabled
+        if self.use_dynamic_topics and self._topic_extractor:
+            topic_set = self._topic_extractor.extract_simple(query)
+            return Intent(
+                label=topic_set.primary_topic,
+                confidence=topic_set.topic_weights.get(topic_set.primary_topic, 0.5),
+                distribution=topic_set.topic_weights
+            )
+
+        # Original fixed-domain classification
         query_lower = query.lower()
 
         # Keyword patterns for each domain

@@ -10,11 +10,33 @@ model:
   llm_model: "gpt-4o"
 
   # Router LLM model (lightweight, for intent classification)
-  router_model: "gpt-4o-mini"
+  router_model: "gpt-4o"
 
   # OpenAI API credentials
   openai_api_key: "sk-wCFRXe9ehPRr3N4wAX40UeWJU5nPExedV6YSP0kRQSBK9xjh"
   openai_base_url: "https://vip.dmxapi.com/v1"
+
+# =============================================================================
+# Hybrid Retrieval Configuration (v1.1 Optimization)
+# =============================================================================
+hybrid_retrieval:
+  enabled: true              # 启用混合检索 (默认 false)
+  fact_extraction: true     # 启用结构化事实提取
+  edge_creation: true       # 启用自动边创建
+  use_llm: true             # 使用 LLM 进行事实提取 (更准确但更慢)
+
+  # 检索权重配置 (总和应为 1.0)
+  semantic_weight: 0.4       # α: 语义相似度权重
+  keyword_weight: 0.3        # β: 关键词匹配权重 (BM25)
+  graph_weight: 0.2          # γ: 图扩展权重
+  recency_weight: 0.1        # δ: 时间衰减权重
+
+  # 图扩展深度
+  expansion_depth: 1
+
+  # BM25 参数
+  bm25_k1: 1.2
+  bm25_b: 0.75
 
 # =============================================================================
 # Embedding Model Configuration
@@ -77,7 +99,7 @@ knowledge_graph:
   retrieval_min_score: 0.3
 
 # =============================================================================
-# Intent Domains
+# Intent Domains (Legacy - used when dynamic_topics.enabled=false)
 # =============================================================================
 intent_domains:
   - "Coding"
@@ -86,6 +108,22 @@ intent_domains:
   - "Casual"
   - "Professional"
   - "Creative"
+
+# =============================================================================
+# Dynamic Topic Discovery (v1.2 - Replaces fixed intent domains)
+# =============================================================================
+dynamic_topics:
+  enabled: true              # 启用动态主题发现 (替代固定意图域)
+  use_llm: true              # 使用 LLM 提取主题 (更准确但更慢)
+
+# 当 enabled=true 时:
+#   - 系统从查询和对话内容中动态提取主题
+#   - 节点使用灵活的主题标签而非固定域
+#   - 检索使用主题相似度匹配
+#
+# 当 enabled=false 时:
+#   - 使用上面定义的 intent_domains 列表
+#   - 传统的固定域分类
 
 # =============================================================================
 # Data Paths

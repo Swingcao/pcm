@@ -42,6 +42,10 @@ if config.USE_EDGE_CREATION:
 if config.USE_FACT_EXTRACTION:
     from src.utils.fact_extractor import FactExtractor
 
+# v1.2 Dynamic topics (conditionally imported)
+if config.USE_DYNAMIC_TOPICS:
+    from src.utils.topic_extractor import TopicMatcher, get_topic_extractor
+
 
 class WeightedKnowledgeGraph:
     """
@@ -127,6 +131,16 @@ class WeightedKnowledgeGraph:
             self._hybrid_retriever = HybridRetriever(config=retrieval_config)
             self._keyword_index = InvertedIndex()
 
+        # v1.2: Initialize topic matcher if dynamic topics enabled
+        self._use_dynamic_topics = config.USE_DYNAMIC_TOPICS
+        self._topic_matcher: Optional[Any] = None
+        self._topic_extractor: Optional[Any] = None
+
+        if self._use_dynamic_topics:
+            print("[v1.2] Dynamic topic discovery enabled")
+            self._topic_matcher = TopicMatcher(embedding_model=self.embedding_model)
+            self._topic_extractor = get_topic_extractor()
+
         # Load existing graph if available
         self._load_graph()
 
@@ -149,18 +163,27 @@ class WeightedKnowledgeGraph:
         # Generate embedding
         embedding = self.embedding_model.encode(node.content).tolist()
 
+        # Build metadata for vector store
+        metadata = {
+            "content": node.content,
+            "node_type": node.node_type.value if isinstance(node.node_type, NodeType) else node.node_type,
+            "domain": node.domain,
+            "weight": node.weight,
+            "created_at": node.created_at.isoformat(),
+            "last_accessed": node.last_accessed.isoformat()
+        }
+
+        # v1.2: Add topics and entities to metadata if available
+        if node.topics:
+            metadata["topics"] = ",".join(node.topics)  # Store as comma-separated string
+        if node.entities:
+            metadata["entities"] = ",".join(node.entities)
+
         # Add to JSON vector store (replaces ChromaDB)
         self.vector_store.upsert(
             ids=[node.id],
             embeddings=[embedding],
-            metadatas=[{
-                "content": node.content,
-                "node_type": node.node_type.value if isinstance(node.node_type, NodeType) else node.node_type,
-                "domain": node.domain,
-                "weight": node.weight,
-                "created_at": node.created_at.isoformat(),
-                "last_accessed": node.last_accessed.isoformat()
-            }],
+            metadatas=[metadata],
             documents=[node.content]
         )
 
@@ -397,6 +420,8 @@ class WeightedKnowledgeGraph:
     ) -> Tuple[List[MemoryNode], List[float]]:
         """
         Original semantic-only retrieval (embedding similarity).
+
+        v1.2: Supports dynamic topic matching when USE_DYNAMIC_TOPICS=True
         """
 
         # Get query embedding
@@ -427,23 +452,46 @@ class WeightedKnowledgeGraph:
             if weight < min_weight:
                 continue
 
-            # Compute intent relevance
-            node_domain = metadata.get("domain", "General")
-            if intent and intent.distribution:
-                intent_relevance = intent.distribution.get(node_domain, 0.1)
+            # v1.2: Compute intent/topic relevance
+            if self._use_dynamic_topics and self._topic_matcher and intent:
+                # Dynamic topic matching
+                node_topics = metadata.get("topics", "").split(",") if metadata.get("topics") else []
+                node_topics = [t.strip() for t in node_topics if t.strip()]
+                node_entities = metadata.get("entities", "").split(",") if metadata.get("entities") else []
+                node_entities = [e.strip() for e in node_entities if e.strip()]
+
+                # Use topic matcher for relevance computation
+                intent_relevance = self._topic_matcher.compute_relevance(
+                    query_topics=intent,  # Intent now contains topics
+                    node_topics=node_topics,
+                    node_entities=node_entities
+                )
             else:
-                intent_relevance = 1.0
+                # Legacy: Fixed domain matching
+                node_domain = metadata.get("domain", "General")
+                if intent and intent.distribution:
+                    intent_relevance = intent.distribution.get(node_domain, 0.1)
+                else:
+                    intent_relevance = 1.0
 
             # Compute final score
             score = compute_retrieval_score(similarity, intent_relevance, weight)
+
+            # Get node topics for MemoryNode
+            node_topics_list = metadata.get("topics", "").split(",") if metadata.get("topics") else None
+            node_topics_list = [t.strip() for t in node_topics_list if t.strip()] if node_topics_list else None
+            node_entities_list = metadata.get("entities", "").split(",") if metadata.get("entities") else None
+            node_entities_list = [e.strip() for e in node_entities_list if e.strip()] if node_entities_list else None
 
             # Create node object
             node = MemoryNode(
                 id=node_id,
                 content=metadata.get("content", results["documents"][0][idx]),
                 node_type=NodeType(metadata.get("node_type", "entity")),
-                domain=node_domain,
-                weight=weight
+                domain=metadata.get("domain", "General"),
+                weight=weight,
+                topics=node_topics_list,
+                entities=node_entities_list
             )
 
             nodes.append(node)

@@ -181,7 +181,7 @@ BM25_B = _get("hybrid_retrieval", "bm25_b", 0.75)
 
 
 # =============================================================================
-# Intent Domains
+# Intent Domains (Legacy - used when USE_DYNAMIC_TOPICS=False)
 # =============================================================================
 
 _default_domains = ["Coding", "Academic", "Personal", "Casual", "Professional", "Creative"]
@@ -192,6 +192,24 @@ if isinstance(INTENT_DOMAINS, dict):
 config = _load_yaml_config()
 if "intent_domains" in config and isinstance(config["intent_domains"], list):
     INTENT_DOMAINS = config["intent_domains"]
+
+
+# =============================================================================
+# Dynamic Topic Discovery (v1.2 - Replaces fixed intent domains)
+# =============================================================================
+
+# Master switch: Use dynamic topic extraction instead of fixed intent domains
+# When True: LLM extracts topics dynamically from content
+# When False: Uses predefined intent_domains for classification
+USE_DYNAMIC_TOPICS = _get("dynamic_topics", "enabled", True, "USE_DYNAMIC_TOPICS")
+if isinstance(USE_DYNAMIC_TOPICS, str):
+    USE_DYNAMIC_TOPICS = USE_DYNAMIC_TOPICS.lower() == "true"
+
+# Use LLM for topic extraction (slower but more accurate)
+# When False: Uses rule-based topic extraction
+TOPIC_EXTRACTION_USE_LLM = _get("dynamic_topics", "use_llm", True)
+if isinstance(TOPIC_EXTRACTION_USE_LLM, str):
+    TOPIC_EXTRACTION_USE_LLM = TOPIC_EXTRACTION_USE_LLM.lower() == "true"
 
 
 # =============================================================================
@@ -260,6 +278,10 @@ def get_config() -> Dict[str, Any]:
             "expansion_depth": HYBRID_EXPANSION_DEPTH,
             "bm25_k1": BM25_K1,
             "bm25_b": BM25_B,
+        },
+        "dynamic_topics": {
+            "enabled": USE_DYNAMIC_TOPICS,
+            "use_llm": TOPIC_EXTRACTION_USE_LLM,
         },
         "paths": {
             "data_dir": DATA_DIR,

@@ -7,6 +7,9 @@ Optimization Modules (v1.1):
 - keyword_index: BM25 inverted index for keyword search
 - edge_creator: Knowledge graph edge creation
 - hybrid_retriever: Combined semantic + keyword retrieval
+
+Dynamic Topics (v1.2):
+- topic_extractor: Dynamic topic discovery (replaces fixed intent domains)
 """
 
 from .llm_client import LLMClient, get_llm_client, chat
@@ -55,6 +58,16 @@ from .hybrid_retriever import (
     create_hybrid_retriever
 )
 
+# v1.2: Dynamic topic discovery
+from .topic_extractor import (
+    TopicSet,
+    TopicExtractor,
+    TopicMatcher,
+    get_topic_extractor,
+    extract_topics,
+    extract_topics_sync
+)
+
 __all__ = [
     # LLM Client
     "LLMClient",
@@ -98,5 +111,12 @@ __all__ = [
     "HybridSearchResult",
     "RetrievalConfig",
     "ScoreFusion",
-    "create_hybrid_retriever"
+    "create_hybrid_retriever",
+    # Dynamic Topics (v1.2)
+    "TopicSet",
+    "TopicExtractor",
+    "TopicMatcher",
+    "get_topic_extractor",
+    "extract_topics",
+    "extract_topics_sync"
 ]

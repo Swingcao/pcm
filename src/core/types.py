@@ -24,20 +24,37 @@ class MemoryNode(BaseModel):
     A node in the weighted knowledge graph.
 
     Represents entities, attributes, or hypotheses stored in L2.
+
+    v1.2: Supports dynamic topics (replaces fixed domains)
     """
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     content: str = Field(..., description="The textual content of this node")
     node_type: NodeType = Field(default=NodeType.ENTITY, description="Type of the node")
-    domain: str = Field(default="General", description="Intent domain this node belongs to")
+    domain: str = Field(default="General", description="Intent domain this node belongs to (legacy)")
     weight: float = Field(default=0.5, ge=0.0, le=1.0, description="Confidence weight")
     created_at: datetime = Field(default_factory=datetime.now)
     last_accessed: datetime = Field(default_factory=datetime.now)
     metadata: Dict[str, Any] = Field(default_factory=dict)
     embedding: Optional[List[float]] = Field(default=None, description="Vector embedding of content")
+    # v1.2: Dynamic topics (replaces fixed domain)
+    topics: Optional[List[str]] = Field(
+        default=None,
+        description="v1.2: List of topic labels extracted from content"
+    )
+    entities: Optional[List[str]] = Field(
+        default=None,
+        description="v1.2: Named entities mentioned in content"
+    )
 
     def update_access_time(self) -> None:
         """Update the last accessed timestamp."""
         self.last_accessed = datetime.now()
+
+    def get_topics(self) -> List[str]:
+        """Get topics (v1.2 dynamic topics or fallback to domain)."""
+        if self.topics:
+            return self.topics
+        return [self.domain] if self.domain else ["General"]
 
     def to_graph_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for NetworkX serialization."""
@@ -51,7 +68,10 @@ class MemoryNode(BaseModel):
             "created_at": self.created_at.isoformat(),
             "last_accessed": self.last_accessed.isoformat(),
             "metadata": str(self.metadata),
-            "has_embedding": self.embedding is not None
+            "has_embedding": self.embedding is not None,
+            # v1.2: Dynamic topics
+            "topics": self.topics if self.topics else [],
+            "entities": self.entities if self.entities else []
         }
 
     class Config:
@@ -90,12 +110,26 @@ class Intent(BaseModel):
     Intent classification result from the Intent Router.
 
     P(I_t | u_t, Q_{t-1}) = Softmax(f_θ(u_t, Q_{t-1}))
+
+    v1.2: Supports dynamic topics (when USE_DYNAMIC_TOPICS=True)
+    - distribution: Contains topic weights instead of fixed domain probabilities
+    - topics: List of extracted topic labels
+    - entities: Named entities mentioned in query
     """
-    label: str = Field(..., description="Primary intent domain label")
+    label: str = Field(..., description="Primary intent domain/topic label")
     confidence: float = Field(..., ge=0.0, le=1.0, description="Confidence score")
     distribution: Dict[str, float] = Field(
         default_factory=dict,
-        description="Full probability distribution over all domains"
+        description="Probability distribution over domains/topics"
+    )
+    # v1.2: Dynamic topic fields (optional for backward compatibility)
+    topics: Optional[List[str]] = Field(
+        default=None,
+        description="v1.2: List of extracted topic labels"
+    )
+    entities: Optional[List[str]] = Field(
+        default=None,
+        description="v1.2: Named entities mentioned in query"
     )
 
     @classmethod
@@ -110,6 +144,20 @@ class Intent(BaseModel):
             confidence=distribution[max_label],
             distribution=distribution
         )
+
+    def get_topics(self) -> List[str]:
+        """Get topics list (v1.2 dynamic topics or distribution keys)."""
+        if self.topics:
+            return self.topics
+        return list(self.distribution.keys())
+
+    def get_topic_weight(self, topic: str) -> float:
+        """Get weight for a specific topic (case-insensitive)."""
+        topic_lower = topic.lower()
+        for t, w in self.distribution.items():
+            if t.lower() == topic_lower:
+                return w
+        return 0.1  # Default low weight
 
 
 class ConversationTurn(BaseModel):

@@ -691,6 +691,97 @@ Score(d) = α × semantic_sim + β × bm25_score + γ × graph_score + δ × rec
 
 ---
 
+## 动态主题发现 (v1.2)
+
+v1.2 版本新增了**动态主题发现**功能，解决了固定意图域无法适应新话题的问题。
+
+### 问题背景
+
+原有系统使用固定的 `intent_domains` 列表（如 Coding, Academic, Personal 等）对用户查询进行分类。这导致：
+
+1. **域不匹配**：对话涉及 "Health"、"Travel"、"Sports" 等话题时，无法正确分类
+2. **检索受限**：节点域与查询域不匹配时，相关性得分过低
+3. **扩展困难**：需要手动添加新域，无法自适应
+
+### 解决方案
+
+动态主题发现通过 LLM 从内容中提取主题，替代固定域分类：
+
+```
+固定域方式:
+  查询 → 分类到 [Coding, Academic, Personal, ...] → 域匹配检索
+
+动态主题方式:
+  查询 → LLM提取主题 ["music", "instruments", "hobbies"] → 主题相似度检索
+```
+
+### 启用方式
+
+**方式一：通过 config.yaml 配置**
+
+```yaml
+# config.yaml
+dynamic_topics:
+  enabled: true              # 启用动态主题发现
+  use_llm: true              # 使用 LLM 提取主题 (更准确但更慢)
+```
+
+**方式二：通过环境变量配置**
+
+```bash
+# 启用动态主题
+export USE_DYNAMIC_TOPICS=true
+
+# 运行评估
+python src/evaluation/run_experiment.py --sample 0
+```
+
+### 主要组件
+
+| 组件 | 文件 | 功能 |
+|------|------|------|
+| **TopicExtractor** | `utils/topic_extractor.py` | 从内容中提取动态主题 |
+| **TopicMatcher** | `utils/topic_extractor.py` | 计算主题相似度 |
+| **TopicSet** | `utils/topic_extractor.py` | 主题数据结构 |
+
+### 工作流程
+
+```
+1. 用户查询: "What instruments does Melanie play?"
+
+2. 主题提取 (LLM):
+   TopicSet {
+     topics: ["music", "instruments", "hobbies"],
+     entities: ["Melanie"],
+     primary_topic: "music"
+   }
+
+3. 节点匹配:
+   - 节点A (topics: ["music", "violin"]) → 高相关性 (0.8)
+   - 节点B (topics: ["travel", "sweden"]) → 低相关性 (0.2)
+
+4. 检索加权:
+   Score = similarity × topic_relevance × weight
+```
+
+### 与固定域对比
+
+| 方面 | 固定域 | 动态主题 |
+|------|--------|----------|
+| 话题覆盖 | 限于预定义列表 | 自动适应任意话题 |
+| 分类准确性 | 可能强制分类到不匹配域 | 提取实际话题 |
+| 实体识别 | 无 | 提取人名、地名等 |
+| 检索相关性 | 域级别匹配 | 主题级别匹配 + 实体匹配 |
+
+### 配置选项
+
+| 配置项 | 默认值 | 说明 |
+|-------|-------|------|
+| `dynamic_topics.enabled` | true | 启用动态主题发现 |
+| `dynamic_topics.use_llm` | true | 使用 LLM 提取主题 |
+
+---
+
 ## 评估框架
 
 ### LoComo Benchmark
@@ -752,7 +843,8 @@ ProCoMemory/
     │   ├── fact_extractor.py    # [v1.1] 结构化事实提取
     │   ├── keyword_index.py     # [v1.1] BM25 关键词索引
     │   ├── edge_creator.py      # [v1.1] 知识图谱边创建
-    │   └── hybrid_retriever.py  # [v1.1] 混合检索器
+    │   ├── hybrid_retriever.py  # [v1.1] 混合检索器
+    │   └── topic_extractor.py   # [v1.2] 动态主题发现
     │
     └── evaluation/
         ├── __init__.py
