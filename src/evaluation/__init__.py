@@ -34,7 +34,9 @@ from .analyze_results import (
     load_experiment_results,
     load_all_qa_pairs,
     generate_visualization_data,
-    save_results_json
+    generate_text_report,
+    save_results_json,
+    save_text_report
 )
 
 from .advanced_analysis import (
@@ -72,7 +74,9 @@ __all__ = [
     "load_experiment_results",
     "load_all_qa_pairs",
     "generate_visualization_data",
+    "generate_text_report",
     "save_results_json",
+    "save_text_report",
     # Advanced Analysis
     "compare_experiments",
     "analyze_surprisal_distribution",

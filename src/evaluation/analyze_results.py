@@ -447,6 +447,174 @@ def compute_statistics(qa_pairs: List[Dict[str, Any]]) -> Dict[str, Any]:
 # Report Generation
 # =============================================================================
 
+def generate_text_report(
+    stats: Dict[str, Any],
+    experiment_name: str = "",
+    error_threshold: float = 0.3,
+    max_errors: int = 20
+) -> str:
+    """
+    Generate a formatted text report.
+
+    Args:
+        stats: Statistics dict from compute_statistics
+        experiment_name: Name of the experiment
+        error_threshold: F1 threshold for errors
+        max_errors: Maximum number of errors to show
+
+    Returns:
+        Formatted text report string
+    """
+    lines = []
+
+    # Header
+    lines.append("=" * 85)
+    lines.append("ProCoMemory Experiment Results Analysis")
+    if experiment_name:
+        lines.append(f"Experiment: {experiment_name}")
+    lines.append(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    lines.append("=" * 85)
+
+    # Overall summary
+    overall = stats["overall"]
+    lines.append(f"\nTotal QA Pairs: {overall['count']}")
+    lines.append(f"Total Samples: {len(stats['by_sample'])}")
+
+    # Category name mappings for display
+    category_display = {
+        "single-hop": "Single-hop (1)",
+        "temporal": "Temporal (2)",
+        "multi-hop": "Multi-hop (3)",
+        "adversarial": "Adversarial (4)",
+        "open-domain": "Open-domain (5)"
+    }
+
+    # Metrics table header
+    lines.append("\n" + "-" * 85)
+    lines.append(f"{'Category':<25} {'Count':>6} {'EM':>8} {'F1':>8} {'BLEU-1':>8} {'Contains':>9} {'NumMatch':>9}")
+    lines.append("-" * 85)
+
+    # Category rows
+    for cat_name in ["single-hop", "temporal", "multi-hop", "adversarial", "open-domain"]:
+        if cat_name in stats["by_category"]:
+            cat_stats = stats["by_category"][cat_name]
+            display_name = category_display.get(cat_name, cat_name)
+            lines.append(f"{display_name:<25} {cat_stats['count']:>6} "
+                        f"{cat_stats['exact_match']:>8.4f} "
+                        f"{cat_stats['f1']:>8.4f} "
+                        f"{cat_stats['bleu1']:>8.4f} "
+                        f"{cat_stats['contains_match']:>9.4f} "
+                        f"{cat_stats['numeric_match']:>9.4f}")
+
+    # Overall row
+    lines.append("-" * 85)
+    lines.append(f"{'Overall':<25} {overall['count']:>6} "
+                f"{overall['exact_match']:>8.4f} "
+                f"{overall['f1']:>8.4f} "
+                f"{overall['bleu1']:>8.4f} "
+                f"{overall['contains_match']:>9.4f} "
+                f"{overall['numeric_match']:>9.4f}")
+    lines.append("=" * 85)
+
+    # Sample-level summary
+    lines.append("\n" + "-" * 85)
+    lines.append("Per-Sample Summary")
+    lines.append("-" * 85)
+    lines.append(f"{'Sample ID':<20} {'Count':>6} {'EM':>8} {'F1':>8} {'BLEU-1':>8} {'Precision':>10} {'Recall':>8}")
+    lines.append("-" * 85)
+
+    for sample_id, sample_stats in sorted(stats["by_sample"].items()):
+        lines.append(f"{sample_id:<20} {sample_stats['count']:>6} "
+                    f"{sample_stats['exact_match']:>8.4f} "
+                    f"{sample_stats['f1']:>8.4f} "
+                    f"{sample_stats['bleu1']:>8.4f} "
+                    f"{sample_stats['precision']:>10.4f} "
+                    f"{sample_stats['recall']:>8.4f}")
+
+    lines.append("=" * 85)
+
+    # Score distribution summary
+    lines.append("\n" + "-" * 85)
+    lines.append("Score Distribution Summary")
+    lines.append("-" * 85)
+
+    f1_scores = [qa["metrics"]["f1"] for qa in stats["detailed"]]
+    bleu_scores = [qa["metrics"]["bleu1"] for qa in stats["detailed"]]
+
+    if f1_scores:
+        lines.append(f"F1 Score:    Mean={sum(f1_scores)/len(f1_scores):.4f}, "
+                    f"Min={min(f1_scores):.4f}, Max={max(f1_scores):.4f}, "
+                    f"Median={sorted(f1_scores)[len(f1_scores)//2]:.4f}")
+    if bleu_scores:
+        lines.append(f"BLEU-1:      Mean={sum(bleu_scores)/len(bleu_scores):.4f}, "
+                    f"Min={min(bleu_scores):.4f}, Max={max(bleu_scores):.4f}, "
+                    f"Median={sorted(bleu_scores)[len(bleu_scores)//2]:.4f}")
+
+    lines.append("=" * 85)
+
+    # Error analysis
+    errors = [qa for qa in stats["detailed"] if qa["metrics"]["f1"] < error_threshold]
+
+    lines.append(f"\n" + "=" * 85)
+    lines.append(f"Error Analysis (F1 < {error_threshold})")
+    lines.append("=" * 85)
+    lines.append(f"Total Errors: {len(errors)} / {len(stats['detailed'])} ({len(errors)/len(stats['detailed'])*100:.1f}%)")
+
+    # Error by category
+    lines.append("\nErrors by Category:")
+    for cat_name in ["single-hop", "temporal", "multi-hop", "adversarial", "open-domain"]:
+        cat_errors = [e for e in errors if e["category_name"] == cat_name]
+        cat_total = len([q for q in stats["detailed"] if q["category_name"] == cat_name])
+        if cat_total > 0:
+            lines.append(f"  {category_display.get(cat_name, cat_name)}: {len(cat_errors)}/{cat_total} "
+                        f"({len(cat_errors)/cat_total*100:.1f}%)")
+
+    # Low scoring examples
+    if errors:
+        errors.sort(key=lambda x: x["metrics"]["f1"])
+        lines.append(f"\nLowest Scoring QA Pairs (showing {min(len(errors), max_errors)}):")
+        lines.append("-" * 85)
+
+        for i, qa in enumerate(errors[:max_errors]):
+            lines.append(f"\n[{i+1}] Sample: {qa['sample_id']} | Category: {qa['category_name']}")
+            lines.append(f"    Question: {qa['question']}")
+            lines.append(f"    Reference: {qa['reference_answer']}")
+            lines.append(f"    Predicted: {qa['predicted_answer']}")
+            lines.append(f"    Metrics: EM={qa['metrics']['exact_match']:.2f}, "
+                        f"F1={qa['metrics']['f1']:.2f}, "
+                        f"BLEU-1={qa['metrics']['bleu1']:.2f}, "
+                        f"Contains={qa['metrics']['contains_match']:.2f}")
+
+    lines.append("\n" + "=" * 85)
+    lines.append("End of Report")
+    lines.append("=" * 85)
+
+    return "\n".join(lines)
+
+
+def save_text_report(
+    stats: Dict[str, Any],
+    output_path: str,
+    experiment_name: str = "",
+    error_threshold: float = 0.3
+) -> None:
+    """
+    Save text report to file.
+
+    Args:
+        stats: Statistics dict
+        output_path: Output file path
+        experiment_name: Name of the experiment
+        error_threshold: F1 threshold for errors
+    """
+    report = generate_text_report(stats, experiment_name, error_threshold)
+
+    with open(output_path, 'w', encoding='utf-8') as f:
+        f.write(report)
+
+    print(f"Text report saved to: {output_path}")
+
+
 def print_summary_table(stats: Dict[str, Any]) -> None:
     """
     Print a formatted summary table.
@@ -807,6 +975,18 @@ def analyze_experiment(
 
     # Save results if output path specified or auto_save enabled
     if output_path:
+        # Get base path for txt report
+        if output_path.endswith('.json'):
+            txt_path = output_path.replace('.json', '.txt')
+        elif output_path.endswith('.csv'):
+            txt_path = output_path.replace('.csv', '.txt')
+        else:
+            txt_path = output_path + '.txt'
+
+        # Save text report
+        save_text_report(stats, txt_path, experiment_name, error_threshold)
+
+        # Save JSON/CSV
         if output_format == "csv":
             save_results_csv(stats, output_path)
             # Also save JSON with visualization if requested
