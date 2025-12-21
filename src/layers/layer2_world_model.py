@@ -117,6 +117,16 @@ class WeightedKnowledgeGraph:
 
         if self._use_hybrid:
             print("[v1.1] Hybrid retrieval enabled - initializing keyword index...")
+            # v1.3: Check for adaptive weights and entity boost settings
+            use_adaptive = getattr(config, 'USE_ADAPTIVE_WEIGHTS', True)
+            use_entity_boost = getattr(config, 'USE_ENTITY_BOOST', True)
+            entity_boost_factor = getattr(config, 'ENTITY_BOOST_FACTOR', 1.5)
+
+            if use_adaptive:
+                print("[v1.3] Query-adaptive weights enabled")
+            if use_entity_boost:
+                print(f"[v1.3] Entity-centric boosting enabled (factor={entity_boost_factor})")
+
             retrieval_config = RetrievalConfig(
                 semantic_weight=config.HYBRID_SEMANTIC_WEIGHT,
                 keyword_weight=config.HYBRID_KEYWORD_WEIGHT,
@@ -128,7 +138,12 @@ class WeightedKnowledgeGraph:
                 top_k=config.RETRIEVAL_TOP_K,
                 min_weight=config.RETRIEVAL_MIN_SCORE
             )
-            self._hybrid_retriever = HybridRetriever(config=retrieval_config)
+            self._hybrid_retriever = HybridRetriever(
+                config=retrieval_config,
+                use_adaptive_weights=use_adaptive,
+                use_entity_boost=use_entity_boost,
+                entity_boost_factor=entity_boost_factor
+            )
             self._keyword_index = InvertedIndex()
 
         # v1.2: Initialize topic matcher if dynamic topics enabled

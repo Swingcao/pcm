@@ -11,6 +11,13 @@ Key Features:
 - Configurable fusion weights
 - Graph-based expansion using edges
 - Reciprocal Rank Fusion (RRF) for score combination
+- [v1.3] Query-adaptive weights based on query type detection
+
+v1.3 Updates:
+- Added QueryType detection for adaptive retrieval weights
+- Factual queries now use keyword_weight=0.5 for better entity matching
+- Temporal queries preserve recency_weight for good temporal performance
+- Multi-hop queries use higher graph_weight for reasoning traversal
 """
 
 import os
@@ -24,6 +31,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 import config
 from src.core.types import MemoryNode, MemoryEdge, Intent
 from src.utils.keyword_index import InvertedIndex, SearchResult, create_index_from_nodes
+from src.utils.query_type_detector import (
+    QueryType, QueryTypeResult, QueryTypeDetector, detect_query_type
+)
+from src.utils.entity_index import EntityCentricIndex, create_entity_index_from_nodes
 
 
 # =============================================================================
@@ -40,6 +51,7 @@ class HybridSearchResult:
     graph_score: float = 0.0
     matched_keywords: List[str] = field(default_factory=list)
     expansion_path: List[str] = field(default_factory=list)  # IDs of nodes in expansion path
+    query_type: Optional[str] = None  # v1.3: Detected query type
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary."""
@@ -51,7 +63,8 @@ class HybridSearchResult:
             "keyword_score": self.keyword_score,
             "graph_score": self.graph_score,
             "matched_keywords": self.matched_keywords,
-            "weight": self.node.weight
+            "weight": self.node.weight,
+            "query_type": self.query_type
         }
 
 
@@ -89,6 +102,137 @@ class RetrievalConfig:
             self.keyword_weight /= total
             self.graph_weight /= total
             self.recency_weight /= total
+
+
+# =============================================================================
+# Query-Adaptive Configuration (v1.3)
+# =============================================================================
+
+class AdaptiveRetrievalConfig:
+    """
+    Provides query-type specific retrieval configurations.
+
+    This class maintains different weight configurations optimized for
+    different query types to improve retrieval accuracy.
+
+    Weight configurations are designed to:
+    - FACTUAL: High keyword weight (0.50) for exact entity matching
+    - TEMPORAL: Balanced weights with recency emphasis (preserved from v1.2)
+    - MULTI_HOP: High graph weight (0.40) for reasoning traversal
+    - ADVERSARIAL: Balanced weights (preserved from v1.2)
+    - DEFAULT: Original balanced configuration
+    """
+
+    # Optimized configurations for each query type
+    # These weights are tuned based on v1-2 analysis results
+
+    FACTUAL_CONFIG = RetrievalConfig(
+        semantic_weight=0.25,
+        keyword_weight=0.50,  # High keyword for entity matching
+        graph_weight=0.15,
+        recency_weight=0.10
+    )
+
+    TEMPORAL_CONFIG = RetrievalConfig(
+        semantic_weight=0.35,
+        keyword_weight=0.30,
+        graph_weight=0.15,
+        recency_weight=0.20  # Higher recency for temporal queries
+    )
+
+    MULTI_HOP_CONFIG = RetrievalConfig(
+        semantic_weight=0.25,
+        keyword_weight=0.25,
+        graph_weight=0.40,  # High graph for multi-hop reasoning
+        recency_weight=0.10,
+        expansion_depth=2  # Enable 2-hop expansion for inference
+    )
+
+    ADVERSARIAL_CONFIG = RetrievalConfig(
+        semantic_weight=0.35,
+        keyword_weight=0.35,
+        graph_weight=0.20,
+        recency_weight=0.10
+    )
+
+    DEFAULT_CONFIG = RetrievalConfig(
+        semantic_weight=0.40,
+        keyword_weight=0.30,
+        graph_weight=0.20,
+        recency_weight=0.10
+    )
+
+    @classmethod
+    def get_config_for_query_type(
+        cls,
+        query_type: QueryType,
+        base_config: Optional[RetrievalConfig] = None
+    ) -> RetrievalConfig:
+        """
+        Get the appropriate configuration for a query type.
+
+        Args:
+            query_type: The detected query type
+            base_config: Optional base config to use for non-weight parameters
+
+        Returns:
+            RetrievalConfig optimized for the query type
+        """
+        # Select weight configuration based on query type
+        if query_type == QueryType.FACTUAL:
+            type_config = cls.FACTUAL_CONFIG
+        elif query_type == QueryType.TEMPORAL:
+            type_config = cls.TEMPORAL_CONFIG
+        elif query_type == QueryType.MULTI_HOP:
+            type_config = cls.MULTI_HOP_CONFIG
+        elif query_type == QueryType.ADVERSARIAL:
+            type_config = cls.ADVERSARIAL_CONFIG
+        else:
+            type_config = cls.DEFAULT_CONFIG
+
+        # If no base config, return the type config directly
+        if base_config is None:
+            return type_config
+
+        # Merge: use type config weights with base config parameters
+        return RetrievalConfig(
+            semantic_weight=type_config.semantic_weight,
+            keyword_weight=type_config.keyword_weight,
+            graph_weight=type_config.graph_weight,
+            recency_weight=type_config.recency_weight,
+            top_k=base_config.top_k,
+            over_fetch_factor=base_config.over_fetch_factor,
+            min_weight=base_config.min_weight,
+            expansion_depth=type_config.expansion_depth if query_type == QueryType.MULTI_HOP else base_config.expansion_depth,
+            edge_discount=base_config.edge_discount,
+            bm25_k1=base_config.bm25_k1,
+            bm25_b=base_config.bm25_b,
+            normalize_scores=base_config.normalize_scores
+        )
+
+    @classmethod
+    def get_weights_for_query(
+        cls,
+        query: str
+    ) -> Tuple[float, float, float, float, QueryType]:
+        """
+        Convenience method to get weights and expansion depth for a query.
+
+        Args:
+            query: The query string
+
+        Returns:
+            Tuple of (semantic_weight, keyword_weight, graph_weight, recency_weight, query_type)
+        """
+        result = detect_query_type(query)
+        config = cls.get_config_for_query_type(result.query_type)
+        return (
+            config.semantic_weight,
+            config.keyword_weight,
+            config.graph_weight,
+            config.recency_weight,
+            result.query_type
+        )
 
 
 # =============================================================================
@@ -204,24 +348,42 @@ class HybridRetriever:
 
     Retrieval formula:
     Score(d) = α × semantic_sim + β × bm25_score + γ × graph_score + δ × recency
+
+    v1.3: Supports adaptive weights based on query type detection.
+    v1.3: Supports entity-centric boosting for improved entity retrieval.
     """
 
     def __init__(
         self,
         config: Optional[RetrievalConfig] = None,
-        keyword_index: Optional[InvertedIndex] = None
+        keyword_index: Optional[InvertedIndex] = None,
+        use_adaptive_weights: bool = True,
+        use_entity_boost: bool = True,
+        entity_boost_factor: float = 1.5
     ):
         """
         Initialize hybrid retriever.
 
         Args:
-            config: Retrieval configuration
+            config: Retrieval configuration (used as base/default config)
             keyword_index: Pre-built keyword index (will be created if not provided)
+            use_adaptive_weights: If True, automatically adjusts weights based on query type
+            use_entity_boost: If True, boosts documents matching query entities
+            entity_boost_factor: Boost multiplier for entity matches (1.0 = no boost)
         """
         self.config = config or RetrievalConfig()
         self.config.validate()
 
         self.keyword_index = keyword_index or InvertedIndex()
+
+        # v1.3: Adaptive weight configuration
+        self.use_adaptive_weights = use_adaptive_weights
+        self._query_type_detector = QueryTypeDetector() if use_adaptive_weights else None
+
+        # v1.3: Entity-centric indexing
+        self.use_entity_boost = use_entity_boost
+        self.entity_boost_factor = entity_boost_factor
+        self._entity_index = EntityCentricIndex() if use_entity_boost else None
 
         # Node cache
         self._nodes: Dict[str, MemoryNode] = {}
@@ -256,6 +418,14 @@ class HybridRetriever:
                 "node_type": node.node_type.value if hasattr(node.node_type, 'value') else str(node.node_type)
             }
         )
+
+        # v1.3: Add to entity index for entity-centric boosting
+        if self._entity_index:
+            self._entity_index.add_document(
+                doc_id=node.id,
+                content=node.content,
+                metadata={"domain": node.domain}
+            )
 
         # Store embedding
         if embedding:
@@ -304,6 +474,8 @@ class HybridRetriever:
         """
         Perform hybrid retrieval.
 
+        v1.3: Uses adaptive weights based on detected query type when enabled.
+
         Args:
             query: Search query
             query_embedding: Optional pre-computed query embedding
@@ -316,12 +488,24 @@ class HybridRetriever:
         top_k = top_k or self.config.top_k
         fetch_count = top_k * self.config.over_fetch_factor
 
+        # v1.3: Detect query type and get adaptive config
+        active_config = self.config
+        detected_query_type = None
+
+        if self.use_adaptive_weights and self._query_type_detector:
+            query_type_result = self._query_type_detector.detect(query)
+            detected_query_type = query_type_result.query_type
+            active_config = AdaptiveRetrievalConfig.get_config_for_query_type(
+                query_type_result.query_type,
+                base_config=self.config
+            )
+
         # 1. Keyword search
         keyword_results = self.keyword_index.bm25_search(
             query,
             top_k=fetch_count,
-            k1=self.config.bm25_k1,
-            b=self.config.bm25_b
+            k1=active_config.bm25_k1,
+            b=active_config.bm25_b
         )
         keyword_scores = {r.doc_id: r.score for r in keyword_results}
         keyword_terms = {r.doc_id: r.matched_terms for r in keyword_results}
@@ -343,7 +527,7 @@ class HybridRetriever:
         # 4. Recency scores
         recency_scores = self._compute_recency_scores()
 
-        # 5. Combine scores
+        # 5. Combine scores using adaptive weights
         all_scores = {
             "semantic": semantic_scores,
             "keyword": keyword_scores,
@@ -351,16 +535,22 @@ class HybridRetriever:
             "recency": recency_scores
         }
 
+        # Use adaptive config weights (different per query type)
         weights = {
-            "semantic": self.config.semantic_weight,
-            "keyword": self.config.keyword_weight,
-            "graph": self.config.graph_weight,
-            "recency": self.config.recency_weight
+            "semantic": active_config.semantic_weight,
+            "keyword": active_config.keyword_weight,
+            "graph": active_config.graph_weight,
+            "recency": active_config.recency_weight
         }
 
         combined = ScoreFusion.linear_combination(all_scores, weights)
 
-        # 6. Apply weight threshold and intent filtering
+        # v1.3: Extract query entities for entity-centric boosting
+        query_entities = set()
+        if self.use_entity_boost and self._entity_index:
+            query_entities = self._entity_index.extract_query_entities(query)
+
+        # 6. Apply weight threshold, entity boost, and intent filtering
         filtered_results: List[HybridSearchResult] = []
 
         for node_id, score in combined.items():
@@ -371,6 +561,15 @@ class HybridRetriever:
             # Weight threshold
             if node.weight < self.config.min_weight:
                 continue
+
+            # v1.3: Entity-centric boosting
+            if self.use_entity_boost and self._entity_index and query_entities:
+                entity_boost = self._entity_index.compute_entity_boost(
+                    node_id,
+                    query_entities,
+                    boost_factor=self.entity_boost_factor
+                )
+                score *= entity_boost
 
             # Intent filtering
             if intent and intent.distribution:
@@ -383,7 +582,8 @@ class HybridRetriever:
                 semantic_score=semantic_scores.get(node_id, 0.0),
                 keyword_score=keyword_scores.get(node_id, 0.0),
                 graph_score=graph_scores.get(node_id, 0.0),
-                matched_keywords=keyword_terms.get(node_id, [])
+                matched_keywords=keyword_terms.get(node_id, []),
+                query_type=detected_query_type.value if detected_query_type else None
             )
             filtered_results.append(result)
 
@@ -522,7 +722,7 @@ class HybridRetriever:
 
     def get_statistics(self) -> Dict[str, Any]:
         """Get retriever statistics."""
-        return {
+        stats = {
             "node_count": len(self._nodes),
             "edge_count": sum(len(v) for v in self._edges.values()),
             "embedding_count": len(self._embeddings),
@@ -532,8 +732,48 @@ class HybridRetriever:
                 "keyword_weight": self.config.keyword_weight,
                 "graph_weight": self.config.graph_weight,
                 "recency_weight": self.config.recency_weight
-            }
+            },
+            # v1.3: Adaptive weights info
+            "adaptive_weights_enabled": self.use_adaptive_weights,
+            # v1.3: Entity-centric indexing info
+            "entity_boost_enabled": self.use_entity_boost,
+            "entity_boost_factor": self.entity_boost_factor,
         }
+
+        if self.use_adaptive_weights:
+            stats["adaptive_configs"] = {
+                "factual": {
+                    "semantic": AdaptiveRetrievalConfig.FACTUAL_CONFIG.semantic_weight,
+                    "keyword": AdaptiveRetrievalConfig.FACTUAL_CONFIG.keyword_weight,
+                    "graph": AdaptiveRetrievalConfig.FACTUAL_CONFIG.graph_weight,
+                    "recency": AdaptiveRetrievalConfig.FACTUAL_CONFIG.recency_weight
+                },
+                "temporal": {
+                    "semantic": AdaptiveRetrievalConfig.TEMPORAL_CONFIG.semantic_weight,
+                    "keyword": AdaptiveRetrievalConfig.TEMPORAL_CONFIG.keyword_weight,
+                    "graph": AdaptiveRetrievalConfig.TEMPORAL_CONFIG.graph_weight,
+                    "recency": AdaptiveRetrievalConfig.TEMPORAL_CONFIG.recency_weight
+                },
+                "multi_hop": {
+                    "semantic": AdaptiveRetrievalConfig.MULTI_HOP_CONFIG.semantic_weight,
+                    "keyword": AdaptiveRetrievalConfig.MULTI_HOP_CONFIG.keyword_weight,
+                    "graph": AdaptiveRetrievalConfig.MULTI_HOP_CONFIG.graph_weight,
+                    "recency": AdaptiveRetrievalConfig.MULTI_HOP_CONFIG.recency_weight,
+                    "expansion_depth": AdaptiveRetrievalConfig.MULTI_HOP_CONFIG.expansion_depth
+                },
+                "adversarial": {
+                    "semantic": AdaptiveRetrievalConfig.ADVERSARIAL_CONFIG.semantic_weight,
+                    "keyword": AdaptiveRetrievalConfig.ADVERSARIAL_CONFIG.keyword_weight,
+                    "graph": AdaptiveRetrievalConfig.ADVERSARIAL_CONFIG.graph_weight,
+                    "recency": AdaptiveRetrievalConfig.ADVERSARIAL_CONFIG.recency_weight
+                }
+            }
+
+        # v1.3: Entity index stats
+        if self.use_entity_boost and self._entity_index:
+            stats["entity_index_stats"] = self._entity_index.get_statistics()
+
+        return stats
 
     def save(self, directory: str) -> None:
         """Save retriever state to directory."""

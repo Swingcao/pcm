@@ -782,6 +782,162 @@ python src/evaluation/run_experiment.py --sample 0
 
 ---
 
+## 查询自适应检索 (v1.3)
+
+v1.3 版本新增了**查询自适应检索**功能，根据查询类型动态调整检索权重，显著提升单跳事实问题和多跳推理问题的准确率。
+
+### 问题背景
+
+v1.2 的分析发现，虽然混合检索整体有效，但固定权重无法针对不同查询类型优化：
+
+| 问题类型 | v1.2 表现 | 根本原因 |
+|---------|----------|---------|
+| **事实问答** (Single-hop) | F1=0.15 | 关键词权重 (0.3) 不足以匹配稀有实体 |
+| **多跳推理** (Multi-hop) | F1=0.25 | 图权重 (0.2) 不足以支持推理遍历 |
+| **时间推理** | F1=0.52 | 表现良好 ✓ |
+| **对抗问题** | F1=0.39 | 表现良好 ✓ |
+
+### 解决方案
+
+v1.3 实现了三个核心优化：
+
+#### 1. 查询类型检测 (QueryTypeDetector)
+
+```python
+# 检测查询类型
+from src.utils import detect_query_type
+
+result = detect_query_type("What instruments does Melanie play?")
+# QueryTypeResult(query_type=QueryType.FACTUAL, confidence=0.92)
+
+result = detect_query_type("When did Caroline move from Sweden?")
+# QueryTypeResult(query_type=QueryType.TEMPORAL, confidence=0.88)
+
+result = detect_query_type("What would Caroline's political leaning likely be?")
+# QueryTypeResult(query_type=QueryType.MULTI_HOP, confidence=0.85)
+```
+
+支持的查询类型：
+- **FACTUAL**: 单跳事实问题 (What, Where, Who, Which)
+- **TEMPORAL**: 时间相关问题 (When, How long)
+- **MULTI_HOP**: 推理/假设问题 (Why, What would, likely)
+- **ADVERSARIAL**: 包含否定/矛盾的问题
+- **DEFAULT**: 一般问题
+
+#### 2. 自适应权重配置 (AdaptiveRetrievalConfig)
+
+根据查询类型自动选择最优权重：
+
+| 查询类型 | semantic | keyword | graph | recency | expansion |
+|---------|----------|---------|-------|---------|-----------|
+| **FACTUAL** | 0.25 | **0.50** | 0.15 | 0.10 | 1 |
+| **TEMPORAL** | 0.35 | 0.30 | 0.15 | **0.20** | 1 |
+| **MULTI_HOP** | 0.25 | 0.25 | **0.40** | 0.10 | **2** |
+| **ADVERSARIAL** | 0.35 | 0.35 | 0.20 | 0.10 | 1 |
+| **DEFAULT** | 0.40 | 0.30 | 0.20 | 0.10 | 1 |
+
+关键改进：
+- **事实问答**: keyword_weight 提升到 0.50，更好匹配稀有实体名
+- **多跳推理**: graph_weight 提升到 0.40，expansion_depth=2 支持二跳遍历
+- **时间推理**: 保持原有配置，维护良好性能
+
+#### 3. 实体中心索引 (EntityCentricIndex)
+
+建立实体到文档的快速映射，提升实体相关查询的召回率：
+
+```python
+# 自动提取实体
+index.add_document("doc1", "[1:56 pm] Melanie: I play violin and clarinet!")
+# 提取实体: ["melanie", "violin", "clarinet", "instruments"]
+
+# 实体匹配加速
+query_entities = index.extract_query_entities("What instruments does Melanie play?")
+# {"melanie", "instruments", "plays"}
+
+# 文档得分加权
+entity_boost = index.compute_entity_boost("doc1", query_entities)
+# boost = 1.5 (50% 加成)
+```
+
+### 启用方式
+
+**方式一：通过 config.yaml 配置**
+
+```yaml
+# config.yaml
+hybrid_retrieval:
+  enabled: true              # 启用混合检索
+
+adaptive_retrieval:
+  enabled: true              # 启用查询自适应权重
+  entity_boost: true         # 启用实体中心索引
+  entity_boost_factor: 1.5   # 实体匹配加速因子
+```
+
+**方式二：通过环境变量配置**
+
+```bash
+# 启用自适应检索
+export USE_HYBRID_RETRIEVAL=true
+export USE_ADAPTIVE_WEIGHTS=true
+export USE_ENTITY_BOOST=true
+
+# 运行评估
+python src/evaluation/run_experiment.py --sample 0
+```
+
+### 新增模块
+
+| 模块 | 文件 | 功能 |
+|------|------|------|
+| **QueryTypeDetector** | `utils/query_type_detector.py` | 规则匹配的查询类型检测 |
+| **AdaptiveRetrievalConfig** | `utils/hybrid_retriever.py` | 查询类型到权重配置的映射 |
+| **EntityCentricIndex** | `utils/entity_index.py` | 实体提取与实体-文档索引 |
+
+### 工作流程
+
+```
+1. 用户查询: "What instruments does Melanie play?"
+
+2. 查询类型检测:
+   QueryTypeDetector.detect(query) → FACTUAL (confidence=0.92)
+
+3. 权重配置选择:
+   AdaptiveRetrievalConfig.FACTUAL_CONFIG:
+     semantic=0.25, keyword=0.50, graph=0.15, recency=0.10
+
+4. 实体提取:
+   EntityCentricIndex.extract_query_entities(query) → {"melanie", "instruments"}
+
+5. 混合检索:
+   - 语义搜索 → 找到相关音乐话题节点
+   - BM25搜索 → 精确匹配 "melanie" + "play"
+   - 实体加成 → 包含 "melanie" 的文档得分 ×1.5
+
+6. 最终结果:
+   找到 "[Melanie: I play violin and clarinet!]"
+```
+
+### 预期性能提升
+
+| 指标 | v1.2 | v1.3 目标 | 改进 |
+|------|------|----------|------|
+| Single-hop F1 | 0.15 | 0.40+ | +170% |
+| Multi-hop F1 | 0.25 | 0.40+ | +60% |
+| Temporal F1 | 0.52 | 0.55+ | 维持 |
+| Adversarial F1 | 0.39 | 0.45+ | +15% |
+| **Overall F1** | 0.34 | 0.45+ | +30% |
+
+### 配置选项
+
+| 配置项 | 默认值 | 说明 |
+|-------|-------|------|
+| `adaptive_retrieval.enabled` | true | 启用查询自适应权重 |
+| `adaptive_retrieval.entity_boost` | true | 启用实体中心索引 |
+| `adaptive_retrieval.entity_boost_factor` | 1.5 | 实体匹配加速因子 |
+
+---
+
 ## 评估框架
 
 ### LoComo Benchmark
@@ -844,7 +1000,9 @@ ProCoMemory/
     │   ├── keyword_index.py     # [v1.1] BM25 关键词索引
     │   ├── edge_creator.py      # [v1.1] 知识图谱边创建
     │   ├── hybrid_retriever.py  # [v1.1] 混合检索器
-    │   └── topic_extractor.py   # [v1.2] 动态主题发现
+    │   ├── topic_extractor.py   # [v1.2] 动态主题发现
+    │   ├── query_type_detector.py  # [v1.3] 查询类型检测
+    │   └── entity_index.py      # [v1.3] 实体中心索引
     │
     └── evaluation/
         ├── __init__.py

@@ -38,6 +38,11 @@ hybrid_retrieval:
   bm25_k1: 1.2
   bm25_b: 0.75
 
+adaptive_retrieval:
+  enabled: true              # 启用查询自适应权重
+  entity_boost: true         # 启用实体中心索引
+  entity_boost_factor: 1.5   # 实体匹配加速因子
+
 # =============================================================================
 # Embedding Model Configuration
 # =============================================================================

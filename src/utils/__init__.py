@@ -10,6 +10,10 @@ Optimization Modules (v1.1):
 
 Dynamic Topics (v1.2):
 - topic_extractor: Dynamic topic discovery (replaces fixed intent domains)
+
+Query Adaptive Retrieval (v1.3):
+- query_type_detector: Detects query type for adaptive weight configuration
+- AdaptiveRetrievalConfig: Provides query-type specific weights
 """
 
 from .llm_client import LLMClient, get_llm_client, chat
@@ -55,7 +59,26 @@ from .hybrid_retriever import (
     HybridSearchResult,
     RetrievalConfig,
     ScoreFusion,
-    create_hybrid_retriever
+    create_hybrid_retriever,
+    AdaptiveRetrievalConfig  # v1.3
+)
+
+# v1.3: Query type detection for adaptive retrieval
+from .query_type_detector import (
+    QueryType,
+    QueryTypeResult,
+    QueryTypeDetector,
+    get_query_type_detector,
+    detect_query_type
+)
+
+# v1.3: Entity-centric indexing
+from .entity_index import (
+    EntityCentricIndex,
+    EntityFact,
+    EntityInfo,
+    EntityExtractorSimple,
+    create_entity_index_from_nodes
 )
 
 # v1.2: Dynamic topic discovery
@@ -112,6 +135,19 @@ __all__ = [
     "RetrievalConfig",
     "ScoreFusion",
     "create_hybrid_retriever",
+    "AdaptiveRetrievalConfig",  # v1.3
+    # Query Type Detection (v1.3)
+    "QueryType",
+    "QueryTypeResult",
+    "QueryTypeDetector",
+    "get_query_type_detector",
+    "detect_query_type",
+    # Entity-Centric Indexing (v1.3)
+    "EntityCentricIndex",
+    "EntityFact",
+    "EntityInfo",
+    "EntityExtractorSimple",
+    "create_entity_index_from_nodes",
     # Dynamic Topics (v1.2)
     "TopicSet",
     "TopicExtractor",

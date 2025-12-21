@@ -181,6 +181,30 @@ BM25_B = _get("hybrid_retrieval", "bm25_b", 0.75)
 
 
 # =============================================================================
+# Query-Adaptive Retrieval Configuration (v1.3 Optimization)
+# =============================================================================
+
+# Enable query-type adaptive weights
+# When True: Dynamically adjusts retrieval weights based on detected query type
+#   - Factual queries: keyword_weight=0.50 for better entity matching
+#   - Temporal queries: recency_weight=0.20 for time-aware retrieval
+#   - Multi-hop queries: graph_weight=0.40 for reasoning traversal
+USE_ADAPTIVE_WEIGHTS = _get("adaptive_retrieval", "enabled", True, "USE_ADAPTIVE_WEIGHTS")
+if isinstance(USE_ADAPTIVE_WEIGHTS, str):
+    USE_ADAPTIVE_WEIGHTS = USE_ADAPTIVE_WEIGHTS.lower() == "true"
+
+# Enable entity-centric boosting
+# When True: Boosts documents that match entities mentioned in the query
+USE_ENTITY_BOOST = _get("adaptive_retrieval", "entity_boost", True, "USE_ENTITY_BOOST")
+if isinstance(USE_ENTITY_BOOST, str):
+    USE_ENTITY_BOOST = USE_ENTITY_BOOST.lower() == "true"
+
+# Entity boost factor (multiplier for documents matching query entities)
+# 1.0 = no boost, 1.5 = 50% boost for entity matches
+ENTITY_BOOST_FACTOR = _get("adaptive_retrieval", "entity_boost_factor", 1.5)
+
+
+# =============================================================================
 # Intent Domains (Legacy - used when USE_DYNAMIC_TOPICS=False)
 # =============================================================================
 
@@ -278,6 +302,11 @@ def get_config() -> Dict[str, Any]:
             "expansion_depth": HYBRID_EXPANSION_DEPTH,
             "bm25_k1": BM25_K1,
             "bm25_b": BM25_B,
+        },
+        "adaptive_retrieval": {
+            "enabled": USE_ADAPTIVE_WEIGHTS,
+            "entity_boost": USE_ENTITY_BOOST,
+            "entity_boost_factor": ENTITY_BOOST_FACTOR,
         },
         "dynamic_topics": {
             "enabled": USE_DYNAMIC_TOPICS,
