@@ -558,7 +558,7 @@ class HybridRetriever:
 
         # 5. v1.4: Source text search (search original messages)
         source_text_scores: Dict[str, float] = {}
-        if active_config.source_text_weight > 0 and self._source_text_index.count() > 0:
+        if active_config.source_text_weight > 0 and self._source_text_index.doc_count > 0:
             source_results = self._source_text_index.bm25_search(
                 query,
                 top_k=fetch_count,
