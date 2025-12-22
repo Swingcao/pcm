@@ -77,6 +77,9 @@ class RetrievalConfig:
     graph_weight: float = 0.2       # γ: weight for graph expansion score
     recency_weight: float = 0.1     # δ: weight for recency bonus
 
+    # v1.4: Source text search weight (ε)
+    source_text_weight: float = 0.0  # ε: weight for original text matching (default 0, add to enable)
+
     # Retrieval parameters
     top_k: int = 10
     over_fetch_factor: int = 3      # Fetch top_k * factor for re-ranking
@@ -95,13 +98,15 @@ class RetrievalConfig:
 
     def validate(self) -> None:
         """Validate that weights sum to 1.0."""
-        total = self.semantic_weight + self.keyword_weight + self.graph_weight + self.recency_weight
+        total = (self.semantic_weight + self.keyword_weight +
+                 self.graph_weight + self.recency_weight + self.source_text_weight)
         if abs(total - 1.0) > 0.01:
             # Normalize weights
             self.semantic_weight /= total
             self.keyword_weight /= total
             self.graph_weight /= total
             self.recency_weight /= total
+            self.source_text_weight /= total
 
 
 # =============================================================================
@@ -121,45 +126,53 @@ class AdaptiveRetrievalConfig:
     - MULTI_HOP: High graph weight (0.40) for reasoning traversal
     - ADVERSARIAL: Balanced weights (preserved from v1.2)
     - DEFAULT: Original balanced configuration
+
+    v1.4: All configs now include source_text_weight for original text matching.
     """
 
     # Optimized configurations for each query type
     # These weights are tuned based on v1-2 analysis results
+    # v1.4: Adjusted to include source_text_weight (taking from semantic)
 
     FACTUAL_CONFIG = RetrievalConfig(
-        semantic_weight=0.25,
-        keyword_weight=0.50,  # High keyword for entity matching
-        graph_weight=0.15,
-        recency_weight=0.10
+        semantic_weight=0.20,
+        keyword_weight=0.45,  # High keyword for entity matching
+        graph_weight=0.10,
+        recency_weight=0.10,
+        source_text_weight=0.15  # v1.4: Search original text
     )
 
     TEMPORAL_CONFIG = RetrievalConfig(
-        semantic_weight=0.35,
-        keyword_weight=0.30,
+        semantic_weight=0.30,
+        keyword_weight=0.25,
         graph_weight=0.15,
-        recency_weight=0.20  # Higher recency for temporal queries
+        recency_weight=0.20,  # Higher recency for temporal queries
+        source_text_weight=0.10  # v1.4: Search original text
     )
 
     MULTI_HOP_CONFIG = RetrievalConfig(
-        semantic_weight=0.25,
-        keyword_weight=0.25,
+        semantic_weight=0.20,
+        keyword_weight=0.20,
         graph_weight=0.40,  # High graph for multi-hop reasoning
         recency_weight=0.10,
+        source_text_weight=0.10,  # v1.4: Search original text
         expansion_depth=2  # Enable 2-hop expansion for inference
     )
 
     ADVERSARIAL_CONFIG = RetrievalConfig(
-        semantic_weight=0.35,
-        keyword_weight=0.35,
+        semantic_weight=0.25,
+        keyword_weight=0.30,
         graph_weight=0.20,
-        recency_weight=0.10
+        recency_weight=0.10,
+        source_text_weight=0.15  # v1.4: Higher for preference changes
     )
 
     DEFAULT_CONFIG = RetrievalConfig(
-        semantic_weight=0.40,
-        keyword_weight=0.30,
+        semantic_weight=0.35,
+        keyword_weight=0.25,
         graph_weight=0.20,
-        recency_weight=0.10
+        recency_weight=0.10,
+        source_text_weight=0.10  # v1.4: Search original text
     )
 
     @classmethod
@@ -200,6 +213,7 @@ class AdaptiveRetrievalConfig:
             keyword_weight=type_config.keyword_weight,
             graph_weight=type_config.graph_weight,
             recency_weight=type_config.recency_weight,
+            source_text_weight=type_config.source_text_weight,  # v1.4
             top_k=base_config.top_k,
             over_fetch_factor=base_config.over_fetch_factor,
             min_weight=base_config.min_weight,
@@ -347,10 +361,11 @@ class HybridRetriever:
     Hybrid retriever combining semantic and keyword search.
 
     Retrieval formula:
-    Score(d) = α × semantic_sim + β × bm25_score + γ × graph_score + δ × recency
+    Score(d) = α × semantic_sim + β × bm25_score + γ × graph_score + δ × recency + ε × source_text
 
     v1.3: Supports adaptive weights based on query type detection.
     v1.3: Supports entity-centric boosting for improved entity retrieval.
+    v1.4: Supports source text search for original message matching.
     """
 
     def __init__(
@@ -384,6 +399,9 @@ class HybridRetriever:
         self.use_entity_boost = use_entity_boost
         self.entity_boost_factor = entity_boost_factor
         self._entity_index = EntityCentricIndex() if use_entity_boost else None
+
+        # v1.4: Source text index for searching original messages
+        self._source_text_index = InvertedIndex()
 
         # Node cache
         self._nodes: Dict[str, MemoryNode] = {}
@@ -425,6 +443,17 @@ class HybridRetriever:
                 doc_id=node.id,
                 content=node.content,
                 metadata={"domain": node.domain}
+            )
+
+        # v1.4: Add source_text to source text index if available
+        if node.source_text:
+            self._source_text_index.add_document(
+                doc_id=node.id,
+                content=node.source_text,
+                metadata={
+                    "source_index": node.source_index,
+                    "source_speaker": node.source_speaker or "unknown"
+                }
             )
 
         # Store embedding
@@ -527,12 +556,24 @@ class HybridRetriever:
         # 4. Recency scores
         recency_scores = self._compute_recency_scores()
 
-        # 5. Combine scores using adaptive weights
+        # 5. v1.4: Source text search (search original messages)
+        source_text_scores: Dict[str, float] = {}
+        if active_config.source_text_weight > 0 and self._source_text_index.count() > 0:
+            source_results = self._source_text_index.bm25_search(
+                query,
+                top_k=fetch_count,
+                k1=active_config.bm25_k1,
+                b=active_config.bm25_b
+            )
+            source_text_scores = {r.doc_id: r.score for r in source_results}
+
+        # 6. Combine scores using adaptive weights
         all_scores = {
             "semantic": semantic_scores,
             "keyword": keyword_scores,
             "graph": graph_scores,
-            "recency": recency_scores
+            "recency": recency_scores,
+            "source_text": source_text_scores  # v1.4
         }
 
         # Use adaptive config weights (different per query type)
@@ -540,7 +581,8 @@ class HybridRetriever:
             "semantic": active_config.semantic_weight,
             "keyword": active_config.keyword_weight,
             "graph": active_config.graph_weight,
-            "recency": active_config.recency_weight
+            "recency": active_config.recency_weight,
+            "source_text": active_config.source_text_weight  # v1.4
         }
 
         combined = ScoreFusion.linear_combination(all_scores, weights)

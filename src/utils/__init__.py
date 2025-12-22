@@ -14,6 +14,9 @@ Dynamic Topics (v1.2):
 Query Adaptive Retrieval (v1.3):
 - query_type_detector: Detects query type for adaptive weight configuration
 - AdaptiveRetrievalConfig: Provides query-type specific weights
+
+Original Text Preservation (v1.4):
+- working_memory_cache: Persistent storage of original messages with round numbers
 """
 
 from .llm_client import LLMClient, get_llm_client, chat
@@ -91,6 +94,14 @@ from .topic_extractor import (
     extract_topics_sync
 )
 
+# v1.4: Working Memory Cache for original text preservation
+from .working_memory_cache import (
+    CachedMessage,
+    WorkingMemoryCache,
+    create_working_memory_cache,
+    get_working_memory_cache
+)
+
 __all__ = [
     # LLM Client
     "LLMClient",
@@ -154,5 +165,10 @@ __all__ = [
     "TopicMatcher",
     "get_topic_extractor",
     "extract_topics",
-    "extract_topics_sync"
+    "extract_topics_sync",
+    # Working Memory Cache (v1.4)
+    "CachedMessage",
+    "WorkingMemoryCache",
+    "create_working_memory_cache",
+    "get_working_memory_cache"
 ]

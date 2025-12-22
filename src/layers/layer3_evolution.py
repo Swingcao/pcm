@@ -37,6 +37,8 @@ class CorrectionAgent:
     1. Diagnose: Analyze conflict source
     2. Decay: Reduce weights of conflicting nodes
     3. Overwrite: Create new nodes with high initial weight
+
+    v1.4: Now preserves original text via source_text, source_index, source_speaker
     """
 
     CORRECTION_PROMPT = """You are analyzing a conflict between new user input and existing memory.
@@ -136,12 +138,17 @@ Respond with JSON:
                     decay_applied[actual_id] = new_weight
 
             # Create new nodes for facts
+            # v1.4: Preserve original text in source_text
             for fact in data.get("new_facts", []):
                 new_node = MemoryNode(
-                    content=fact["content"],
+                    content=fact["content"],  # LLM-generated summary for semantic search
                     node_type=NodeType.FACT,
                     domain=packet.intent.label if packet.intent else "General",
-                    weight=0.8  # High initial weight for corrections
+                    weight=0.8,  # High initial weight for corrections
+                    # v1.4: Original text preservation
+                    source_text=packet.content,  # Original user message
+                    source_index=packet.source_index,  # Round number
+                    source_speaker=packet.source_speaker  # Speaker
                 )
                 knowledge_graph.add_node(new_node)
                 new_nodes.append(new_node)
@@ -179,6 +186,8 @@ class ProfilingAgent:
     Core Innovation:
     - Generate hypotheses about user's latent goals
     - Hypotheses are validated implicitly through future observations
+
+    v1.4: Now preserves original text via source_text, source_index, source_speaker
     """
 
     PROFILING_PROMPT = """You are generating a hypothesis about the user based on novel information.
@@ -265,12 +274,17 @@ Respond with JSON:
             data = json.loads(content)
 
             # Create hypothesis node
+            # v1.4: Include source text preservation
             hypothesis = HypothesisNode.create(
                 content=data.get("hypothesis", f"Hypothesis based on: {packet.content[:50]}"),
                 domain=data.get("domain", packet.intent.label if packet.intent else "General"),
                 surprisal_score=packet.effective_score,
                 weight_min=self.weight_min,
-                weight_max=self.weight_max
+                weight_max=self.weight_max,
+                # v1.4: Pass source tracking fields
+                source_text=packet.content,
+                source_index=packet.source_index,
+                source_speaker=packet.source_speaker
             )
 
             # Store evidence keywords in metadata
@@ -297,10 +311,15 @@ Respond with JSON:
         except Exception as e:
             print(f"Profiling agent failed: {e}")
             # Create a simple hypothesis as fallback
+            # v1.4: Include source preservation even in fallback
             hypothesis = HypothesisNode.create(
                 content=f"User interest: {packet.content[:100]}",
                 domain=packet.intent.label if packet.intent else "General",
-                surprisal_score=packet.effective_score
+                surprisal_score=packet.effective_score,
+                # v1.4: Pass source tracking fields
+                source_text=packet.content,
+                source_index=packet.source_index,
+                source_speaker=packet.source_speaker
             )
             knowledge_graph.add_node(hypothesis)
 
@@ -320,15 +339,21 @@ class MaintenanceAgent:
     1. Boost: Increase weights of matching nodes
     2. Update Timestamp: Prevent forgetting
     3. Promote Hypotheses: If supported by new evidence
+
+    v1.4: Now creates reference nodes to preserve ALL messages
+    - Stores original text even for reinforcing messages
+    - Ensures no user input is ever lost
     """
 
     def __init__(
         self,
         learning_rate: float = None,
-        promotion_threshold: float = 0.7
+        promotion_threshold: float = 0.7,
+        store_reinforcements: bool = True  # v1.4: Always store by default
     ):
         self.learning_rate = learning_rate or config.ETA
         self.promotion_threshold = promotion_threshold
+        self.store_reinforcements = store_reinforcements  # v1.4
 
     async def process(
         self,
@@ -371,6 +396,22 @@ class MaintenanceAgent:
                     if knowledge_graph.promote_hypothesis_to_fact(node_id):
                         promoted_hypotheses.append(node_id)
                         print(f"Hypothesis promoted to fact: {node.content[:50]}...")
+
+        # v1.4: Create reference node to preserve ALL messages
+        # This ensures no user input is ever lost
+        if self.store_reinforcements and packet.source_index is not None:
+            ref_node = MemoryNode(
+                content=f"Reinforcement: {packet.content[:100]}...",  # Brief summary
+                node_type=NodeType.ATTRIBUTE,
+                domain=packet.intent.label if packet.intent else "General",
+                weight=0.4,  # Lower weight for reference nodes
+                # v1.4: Original text preservation
+                source_text=packet.content,  # Full original message
+                source_index=packet.source_index,
+                source_speaker=packet.source_speaker,
+                metadata={"reinforces": reinforced_ids, "type": "reinforcement_ref"}
+            )
+            knowledge_graph.add_node(ref_node)
 
         return MaintenanceResult(
             reinforced_node_ids=reinforced_ids,

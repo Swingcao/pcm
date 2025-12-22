@@ -5,6 +5,8 @@ Central orchestrator that connects L1 (Perception), L2 (World Model), and L3 (Ev
 
 This is the main entry point for interacting with the PCM system.
 All results are saved to the unified results folder in JSON format.
+
+v1.4: Added Working Memory Cache for original text preservation.
 """
 
 import os
@@ -23,6 +25,8 @@ from src.layers.layer2_world_model import WeightedKnowledgeGraph
 from src.layers.layer3_evolution import CognitiveEngine
 from src.utils.llm_client import LLMClient, get_llm_client
 from src.utils.json_storage import ResultsManager
+# v1.4: Working Memory Cache for original text preservation
+from src.utils.working_memory_cache import WorkingMemoryCache
 
 
 class PCMSystem:
@@ -40,6 +44,8 @@ class PCMSystem:
     3. L3 evolves the world model based on surprisal levels
 
     All data is stored locally in JSON format in the unified results folder.
+
+    v1.4: Includes Working Memory Cache for preserving original message text.
     """
 
     def __init__(
@@ -48,7 +54,8 @@ class PCMSystem:
         graph_path: Optional[str] = None,
         vector_store_path: Optional[str] = None,
         max_context_tokens: int = None,
-        use_mock: bool = False
+        use_mock: bool = False,
+        wm_cache_path: Optional[str] = None  # v1.4
     ):
         """
         Initialize the PCM system.
@@ -59,11 +66,19 @@ class PCMSystem:
             vector_store_path: Path for vector store (JSON format)
             max_context_tokens: Maximum tokens in working memory
             use_mock: Use mock components for testing
+            wm_cache_path: v1.4: Path for working memory cache (default: data/wm_cache.json)
         """
         self.use_mock = use_mock or config.USE_MOCK_LLM
 
         # Initialize results manager for unified storage
         self.results_manager = ResultsManager(results_base or config.RESULTS_DIR)
+
+        # v1.4: Initialize Working Memory Cache for original text preservation
+        _wm_cache_path = wm_cache_path or os.path.join(
+            results_base or config.RESULTS_DIR, "wm_cache.json"
+        )
+        print(f"Initializing Working Memory Cache at: {_wm_cache_path}")
+        self.wm_cache = WorkingMemoryCache(storage_path=_wm_cache_path)
 
         # Initialize Layer 2 first (it's the foundation)
         print("Initializing Layer 2: World Model...")
@@ -90,6 +105,13 @@ class PCMSystem:
         # Interaction counter
         self._interaction_count = 0
 
+        # v1.4: Sync message counter with WM cache
+        if self.wm_cache.size() > 0:
+            # Resume from existing cache
+            max_index = max(m.index for m in self.wm_cache.get_all())
+            self.perception.context_queue.set_message_counter(max_index + 1)
+            print(f"[v1.4] Resumed from WM cache with {self.wm_cache.size()} messages")
+
         print("PCM System initialized successfully!")
         print(f"Results directory: {self.results_manager.base_path}")
 
@@ -107,6 +129,9 @@ class PCMSystem:
         3. L3 Evolution: Update world model based on surprisal
         4. Response Generation: Generate assistant response (optional)
 
+        v1.4: Caches both user and assistant messages to WM cache for
+        original text preservation.
+
         Args:
             user_input: The user's message
             generate_response: Whether to generate an assistant response
@@ -116,6 +141,17 @@ class PCMSystem:
         """
         self._interaction_count += 1
         timestamp = datetime.now()
+
+        # v1.4: Get current source_index before processing
+        source_index = self.perception.get_current_index()
+
+        # v1.4: Cache original user message BEFORE any processing
+        self.wm_cache.add_message(
+            index=source_index,
+            raw_message=user_input,
+            speaker="user",
+            timestamp=timestamp.isoformat()
+        )
 
         # === Step 1: Initial L2 Retrieval ===
         # First pass retrieval to get context for surprisal calculation
@@ -127,10 +163,12 @@ class PCMSystem:
 
         # === Step 2: L1 Processing ===
         # Intent classification and surprisal calculation
+        # v1.4: Pass explicit source_index for tracking
         evicted, intent, surprisal_packet = await self.perception.process_input(
             user_input=user_input,
             retrieved_nodes=initial_nodes,
-            retrieval_scores=initial_scores
+            retrieval_scores=initial_scores,
+            source_index=source_index
         )
 
         # === Step 3: Intent-Masked Re-retrieval ===
@@ -160,8 +198,18 @@ class PCMSystem:
                 context=retrieval_nodes,
                 intent=intent
             )
-            # Add response to working memory
-            self.perception.add_response(response)
+
+            # v1.4: Get assistant source_index and cache response
+            assistant_source_index = self.perception.get_current_index()
+            self.wm_cache.add_message(
+                index=assistant_source_index,
+                raw_message=response,
+                speaker="assistant",
+                timestamp=datetime.now().isoformat()
+            )
+
+            # Add response to working memory (with source_index)
+            self.perception.add_response(response, source_index=assistant_source_index)
 
         # === Step 7: Save State ===
         self.world_model.save()
@@ -171,6 +219,7 @@ class PCMSystem:
             "interaction_id": self._interaction_count,
             "timestamp": timestamp.isoformat(),
             "user_input": user_input,
+            "source_index": source_index,  # v1.4
             "intent": {
                 "label": intent.label,
                 "confidence": intent.confidence,
@@ -209,16 +258,23 @@ class PCMSystem:
         Process data evicted from working memory.
 
         Extract knowledge and add to L2.
+
+        v1.4: Now preserves source_text, source_index, and source_speaker.
         """
         # Extract entities and facts from evicted content
         for turn in evicted.turns:
             if turn.role == "user":
                 # Create a node for user statement
+                # v1.4: Preserve source information
                 node = MemoryNode(
                     content=turn.content,
                     node_type=NodeType.FACT,
                     domain="General",  # Could use intent classification
-                    weight=0.6
+                    weight=0.6,
+                    # v1.4: Source preservation
+                    source_text=turn.content,
+                    source_index=turn.source_index,
+                    source_speaker=turn.role
                 )
                 self.world_model.add_node(node)
 
@@ -318,12 +374,16 @@ Respond helpfully, utilizing relevant context when appropriate. If the context h
     def get_statistics(self) -> Dict[str, Any]:
         """
         Get comprehensive system statistics.
+
+        v1.4: Now includes Working Memory Cache statistics.
         """
         return {
             "interactions": self._interaction_count,
             "perception": self.perception.get_statistics(),
             "world_model": self.world_model.get_statistics(),
-            "cognitive_engine": self.cognitive_engine.get_statistics()
+            "cognitive_engine": self.cognitive_engine.get_statistics(),
+            # v1.4: WM cache statistics
+            "wm_cache": self.wm_cache.get_statistics()
         }
 
     def get_context(self) -> str:

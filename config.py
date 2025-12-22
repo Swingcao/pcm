@@ -205,6 +205,38 @@ ENTITY_BOOST_FACTOR = _get("adaptive_retrieval", "entity_boost_factor", 1.5)
 
 
 # =============================================================================
+# Original Text Preservation Configuration (v1.4)
+# =============================================================================
+
+# Master switch: Enable original text preservation
+# When True: Preserves original message text in source_text fields
+PRESERVE_ORIGINAL_TEXT = _get("original_text_preservation", "enabled", True, "PRESERVE_ORIGINAL_TEXT")
+if isinstance(PRESERVE_ORIGINAL_TEXT, str):
+    PRESERVE_ORIGINAL_TEXT = PRESERVE_ORIGINAL_TEXT.lower() == "true"
+
+# Store reference nodes for reinforcing messages (MaintenanceAgent)
+# When True: Creates reference nodes with original text even for low-surprise messages
+STORE_REINFORCEMENTS = _get("original_text_preservation", "store_reinforcements", True)
+if isinstance(STORE_REINFORCEMENTS, str):
+    STORE_REINFORCEMENTS = STORE_REINFORCEMENTS.lower() == "true"
+
+# Cache assistant messages alongside user messages
+# When True: Both user and assistant messages are stored in WM cache
+CACHE_ASSISTANT_MESSAGES = _get("original_text_preservation", "cache_assistant_messages", True)
+if isinstance(CACHE_ASSISTANT_MESSAGES, str):
+    CACHE_ASSISTANT_MESSAGES = CACHE_ASSISTANT_MESSAGES.lower() == "true"
+
+# Source text weight in hybrid retrieval (ε)
+# Weight for original text keyword matching in retrieval score
+# Score = α×semantic + β×keyword + γ×graph + δ×recency + ε×source_text
+SOURCE_TEXT_WEIGHT = _get("original_text_preservation", "source_text_weight", 0.15)
+
+# Working Memory Cache path
+WM_CACHE_PATH = _get("original_text_preservation", "wm_cache_path", None)
+# If not specified, will default to {results_dir}/wm_cache.json
+
+
+# =============================================================================
 # Intent Domains (Legacy - used when USE_DYNAMIC_TOPICS=False)
 # =============================================================================
 
@@ -307,6 +339,13 @@ def get_config() -> Dict[str, Any]:
             "enabled": USE_ADAPTIVE_WEIGHTS,
             "entity_boost": USE_ENTITY_BOOST,
             "entity_boost_factor": ENTITY_BOOST_FACTOR,
+        },
+        "original_text_preservation": {  # v1.4
+            "enabled": PRESERVE_ORIGINAL_TEXT,
+            "store_reinforcements": STORE_REINFORCEMENTS,
+            "cache_assistant_messages": CACHE_ASSISTANT_MESSAGES,
+            "source_text_weight": SOURCE_TEXT_WEIGHT,
+            "wm_cache_path": WM_CACHE_PATH,
         },
         "dynamic_topics": {
             "enabled": USE_DYNAMIC_TOPICS,

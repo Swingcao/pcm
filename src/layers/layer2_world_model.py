@@ -194,6 +194,14 @@ class WeightedKnowledgeGraph:
         if node.entities:
             metadata["entities"] = ",".join(node.entities)
 
+        # v1.4: Add source text preservation fields
+        if node.source_text:
+            metadata["source_text"] = node.source_text
+        if node.source_index is not None:
+            metadata["source_index"] = node.source_index
+        if node.source_speaker:
+            metadata["source_speaker"] = node.source_speaker
+
         # Add to JSON vector store (replaces ChromaDB)
         self.vector_store.upsert(
             ids=[node.id],
@@ -264,12 +272,22 @@ class WeightedKnowledgeGraph:
             return None
 
         node_data = self.graph.nodes[node_id]
+
+        # v1.4: Parse source preservation fields
+        source_index = node_data.get("source_index")
+        if isinstance(source_index, int) and source_index < 0:
+            source_index = None
+
         node = MemoryNode(
             id=node_id,
             content=node_data.get("content", ""),
             node_type=NodeType(node_data.get("node_type", "entity")),
             domain=node_data.get("domain", "General"),
-            weight=node_data.get("weight", 0.5)
+            weight=node_data.get("weight", 0.5),
+            # v1.4: Source preservation
+            source_text=node_data.get("source_text") or None,
+            source_index=source_index,
+            source_speaker=node_data.get("source_speaker") or None
         )
         self._node_cache[node_id] = node
         return node
@@ -498,6 +516,12 @@ class WeightedKnowledgeGraph:
             node_entities_list = metadata.get("entities", "").split(",") if metadata.get("entities") else None
             node_entities_list = [e.strip() for e in node_entities_list if e.strip()] if node_entities_list else None
 
+            # v1.4: Get source preservation fields
+            source_text = metadata.get("source_text") or None
+            source_index = metadata.get("source_index")
+            source_index = source_index if source_index is not None and source_index >= 0 else None
+            source_speaker = metadata.get("source_speaker") or None
+
             # Create node object
             node = MemoryNode(
                 id=node_id,
@@ -506,7 +530,11 @@ class WeightedKnowledgeGraph:
                 domain=metadata.get("domain", "General"),
                 weight=weight,
                 topics=node_topics_list,
-                entities=node_entities_list
+                entities=node_entities_list,
+                # v1.4: Source preservation
+                source_text=source_text,
+                source_index=source_index,
+                source_speaker=source_speaker
             )
 
             nodes.append(node)

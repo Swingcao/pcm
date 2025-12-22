@@ -39,6 +39,8 @@ class SlidingContextQueue:
     when the queue exceeds the token limit.
 
     Q_t = [u_{t-k}, r_{t-k}, ..., u_t]
+
+    v1.4: Added message counter for source_index tracking
     """
 
     def __init__(
@@ -57,12 +59,15 @@ class SlidingContextQueue:
         self.eviction_size = eviction_size or config.EVICTION_SIZE
         self._queue: deque[ConversationTurn] = deque()
         self._total_tokens = 0
+        # v1.4: Global message counter for source_index tracking
+        self._message_counter: int = 0
 
     def add(
         self,
         role: str,
         content: str,
-        timestamp: Optional[datetime] = None
+        timestamp: Optional[datetime] = None,
+        source_index: Optional[int] = None  # v1.4: Allow explicit source_index
     ) -> Optional[EvictedData]:
         """
         Add a new turn to the queue.
@@ -73,10 +78,16 @@ class SlidingContextQueue:
             role: 'user' or 'assistant'
             content: Message content
             timestamp: Optional timestamp
+            source_index: v1.4: Explicit source index (if None, auto-increment)
 
         Returns:
             EvictedData if eviction occurred, None otherwise
         """
+        # v1.4: Use provided source_index or auto-increment
+        if source_index is None:
+            source_index = self._message_counter
+            self._message_counter += 1
+
         # Estimate token count (rough: ~4 chars per token)
         token_count = len(content) // 4 + 1
 
@@ -84,7 +95,8 @@ class SlidingContextQueue:
             role=role,
             content=content,
             timestamp=timestamp or datetime.now(),
-            token_count=token_count
+            token_count=token_count,
+            source_index=source_index  # v1.4: Track source index
         )
 
         self._queue.append(turn)
@@ -96,6 +108,14 @@ class SlidingContextQueue:
             evicted = self._evict()
 
         return evicted
+
+    def get_current_index(self) -> int:
+        """v1.4: Get the current message counter value."""
+        return self._message_counter
+
+    def set_message_counter(self, value: int) -> None:
+        """v1.4: Set the message counter (for loading from cache)."""
+        self._message_counter = value
 
     def _evict(self) -> EvictedData:
         """
@@ -424,7 +444,9 @@ class SurpriseMonitor:
         self,
         user_input: str,
         retrieved_nodes: List[MemoryNode],
-        retrieval_scores: List[float]
+        retrieval_scores: List[float],
+        source_index: Optional[int] = None,  # v1.4: Source tracking
+        source_speaker: str = "user"  # v1.4: Source tracking
     ) -> SurprisalPacket:
         """
         Calculate surprisal synchronously (uses semantic distance only).
@@ -435,6 +457,8 @@ class SurpriseMonitor:
             user_input: User's query
             retrieved_nodes: Nodes retrieved from L2
             retrieval_scores: Corresponding retrieval scores
+            source_index: v1.4: Round/turn number for provenance
+            source_speaker: v1.4: Speaker ('user' or 'assistant')
 
         Returns:
             SurprisalPacket with raw and effective surprisal
@@ -464,14 +488,19 @@ class SurpriseMonitor:
             retrieval_entropy=retrieval_entropy,
             retrieved_context=[n.content for n in retrieved_nodes],
             retrieved_node_ids=[n.id for n in retrieved_nodes],
-            timestamp=datetime.now()
+            timestamp=datetime.now(),
+            # v1.4: Source tracking
+            source_index=source_index,
+            source_speaker=source_speaker
         )
 
     async def calculate_surprisal(
         self,
         user_input: str,
         retrieved_nodes: List[MemoryNode],
-        retrieval_scores: List[float]
+        retrieval_scores: List[float],
+        source_index: Optional[int] = None,  # v1.4: Source tracking
+        source_speaker: str = "user"  # v1.4: Source tracking
     ) -> SurprisalPacket:
         """
         Calculate surprisal asynchronously with full semantic analysis.
@@ -482,6 +511,8 @@ class SurpriseMonitor:
             user_input: User's query
             retrieved_nodes: Nodes retrieved from L2
             retrieval_scores: Corresponding retrieval scores
+            source_index: v1.4: Round/turn number for provenance
+            source_speaker: v1.4: Speaker ('user' or 'assistant')
 
         Returns:
             SurprisalPacket with detailed surprisal analysis
@@ -516,7 +547,10 @@ class SurpriseMonitor:
             retrieval_entropy=retrieval_entropy,
             retrieved_context=memory_contents,
             retrieved_node_ids=memory_ids,
-            timestamp=datetime.now()
+            timestamp=datetime.now(),
+            # v1.4: Source tracking
+            source_index=source_index,
+            source_speaker=source_speaker
         )
 
         # Add semantic analysis metadata
@@ -569,7 +603,8 @@ class PerceptionLayer:
         self,
         user_input: str,
         retrieved_nodes: List[MemoryNode] = None,
-        retrieval_scores: List[float] = None
+        retrieval_scores: List[float] = None,
+        source_index: Optional[int] = None  # v1.4: Allow explicit source_index
     ) -> Tuple[Optional[EvictedData], Intent, SurprisalPacket]:
         """
         Process a user input through the perception layer.
@@ -582,6 +617,7 @@ class PerceptionLayer:
             user_input: User's message
             retrieved_nodes: Nodes retrieved from L2
             retrieval_scores: Retrieval scores
+            source_index: v1.4: Explicit source index (if None, auto-assigned)
 
         Returns:
             Tuple of (evicted_data, intent, surprisal_packet)
@@ -589,28 +625,44 @@ class PerceptionLayer:
         retrieved_nodes = retrieved_nodes or []
         retrieval_scores = retrieval_scores or []
 
+        # v1.4: Capture the source_index before adding to queue
+        # The queue's add() will auto-increment if source_index is None
+        if source_index is None:
+            source_index = self.context_queue.get_current_index()
+
         # Get current context for intent classification
         context = self.context_queue.get_context(max_turns=5)
 
         # Add input to queue (may trigger eviction)
-        evicted = self.context_queue.add("user", user_input)
+        evicted = self.context_queue.add("user", user_input, source_index=source_index)
 
         # Classify intent
         intent = await self.intent_router.classify(user_input, context)
 
         # Calculate surprisal with full semantic analysis
+        # v1.4: Pass source_index and source_speaker
         surprisal_packet = await self.surprise_monitor.calculate_surprisal(
             user_input,
             retrieved_nodes,
-            retrieval_scores
+            retrieval_scores,
+            source_index=source_index,
+            source_speaker="user"
         )
         surprisal_packet.intent = intent
 
         return evicted, intent, surprisal_packet
 
-    def add_response(self, response: str) -> None:
-        """Add assistant response to context queue."""
-        self.context_queue.add("assistant", response)
+    def add_response(self, response: str, source_index: Optional[int] = None) -> None:
+        """
+        Add assistant response to context queue.
+
+        v1.4: Now accepts source_index for tracking.
+        """
+        self.context_queue.add("assistant", response, source_index=source_index)
+
+    def get_current_index(self) -> int:
+        """v1.4: Get the current message counter value."""
+        return self.context_queue.get_current_index()
 
     def get_context(self) -> str:
         """Get current conversation context."""

@@ -26,6 +26,7 @@ class MemoryNode(BaseModel):
     Represents entities, attributes, or hypotheses stored in L2.
 
     v1.2: Supports dynamic topics (replaces fixed domains)
+    v1.4: Supports original text preservation (source_text, source_index, source_speaker)
     """
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     content: str = Field(..., description="The textual content of this node")
@@ -44,6 +45,19 @@ class MemoryNode(BaseModel):
     entities: Optional[List[str]] = Field(
         default=None,
         description="v1.2: Named entities mentioned in content"
+    )
+    # v1.4: Original text preservation (inspired by O-Mem's raw_message pattern)
+    source_text: Optional[str] = Field(
+        default=None,
+        description="v1.4: Original raw message this node was derived from"
+    )
+    source_index: Optional[int] = Field(
+        default=None,
+        description="v1.4: Round/turn number in conversation for provenance tracking"
+    )
+    source_speaker: Optional[str] = Field(
+        default=None,
+        description="v1.4: Speaker of the source message ('user' or 'assistant')"
     )
 
     def update_access_time(self) -> None:
@@ -71,7 +85,11 @@ class MemoryNode(BaseModel):
             "has_embedding": self.embedding is not None,
             # v1.2: Dynamic topics
             "topics": self.topics if self.topics else [],
-            "entities": self.entities if self.entities else []
+            "entities": self.entities if self.entities else [],
+            # v1.4: Original text preservation
+            "source_text": self.source_text or "",
+            "source_index": self.source_index if self.source_index is not None else -1,
+            "source_speaker": self.source_speaker or ""
         }
 
     class Config:
@@ -166,6 +184,11 @@ class ConversationTurn(BaseModel):
     content: str = Field(..., description="The message content")
     timestamp: datetime = Field(default_factory=datetime.now)
     token_count: int = Field(default=0, description="Estimated token count")
+    # v1.4: Source tracking for provenance
+    source_index: Optional[int] = Field(
+        default=None,
+        description="v1.4: Round/turn number in conversation"
+    )
 
 
 class EvictedData(BaseModel):
@@ -196,6 +219,8 @@ class SurprisalPacket(BaseModel):
     - Effective surprisal score S_eff (after entropy adjustment)
     - Retrieved context used for calculation
     - Semantic analysis metadata (when using semantic method)
+
+    v1.4: Added source tracking for original text preservation
     """
     content: str = Field(..., description="The evicted/new content being processed")
     raw_score: float = Field(default=0.0, description="Raw NLL-based surprisal S_raw")
@@ -210,6 +235,16 @@ class SurprisalPacket(BaseModel):
     semantic_analysis: Optional[Dict[str, Any]] = Field(
         default=None,
         description="Semantic analysis details: relation, conflict_score, reasoning, conflicting_ids"
+    )
+
+    # v1.4: Source tracking for original text preservation
+    source_index: Optional[int] = Field(
+        default=None,
+        description="v1.4: Round/turn number in conversation for provenance tracking"
+    )
+    source_speaker: Optional[str] = Field(
+        default=None,
+        description="v1.4: Speaker of the source message ('user' or 'assistant')"
     )
 
     def get_surprise_level(self, theta_low: float, theta_high: float) -> str:
@@ -253,6 +288,8 @@ class HypothesisNode(MemoryNode):
 
     Hypotheses are tentative beliefs about user intent/preferences that
     require implicit verification through future observations.
+
+    v1.4: Inherits source_text, source_index, source_speaker from MemoryNode
     """
     node_type: NodeType = Field(default=NodeType.HYPOTHESIS)
     hypothesis_content: str = Field(..., description="The hypothesis statement")
@@ -267,12 +304,18 @@ class HypothesisNode(MemoryNode):
         domain: str,
         surprisal_score: float,
         weight_min: float = 0.3,
-        weight_max: float = 0.5
+        weight_max: float = 0.5,
+        # v1.4: Source tracking parameters
+        source_text: Optional[str] = None,
+        source_index: Optional[int] = None,
+        source_speaker: Optional[str] = None
     ) -> "HypothesisNode":
         """
         Create a hypothesis node with weight initialized via sigmoid.
 
         w_init = σ(S_eff) mapped to [weight_min, weight_max]
+
+        v1.4: Now accepts source_text, source_index, source_speaker for provenance tracking
         """
         import math
         # Sigmoid mapping
@@ -285,7 +328,11 @@ class HypothesisNode(MemoryNode):
             hypothesis_content=content,
             domain=domain,
             weight=weight,
-            initial_confidence=weight
+            initial_confidence=weight,
+            # v1.4: Pass through source fields
+            source_text=source_text,
+            source_index=source_index,
+            source_speaker=source_speaker
         )
 
 
