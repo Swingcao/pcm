@@ -41,6 +41,21 @@ from src.core.orchestrator import create_pcm_system
 from src.core.types import NodeType
 
 
+def generate_experiment_suffix(experiment_name: str = None) -> str:
+    """
+    Generate a unique experiment suffix.
+
+    Args:
+        experiment_name: User-provided experiment name. If None, generates timestamp.
+
+    Returns:
+        Suffix string for experiment identification
+    """
+    if experiment_name:
+        return experiment_name
+    return datetime.now().strftime("%Y%m%d_%H%M%S")
+
+
 def build_jsonl_index(jsonl_path: str) -> dict:
     """
     Build an index mapping context IDs to file offsets for fast lookup.
@@ -236,11 +251,7 @@ async def run_evaluation(args):
     print(f"Mock LLM: {args.mock}")
     print(f"{'=' * 60}\n")
 
-    # Clean existing results
-    if os.path.exists(result_path):
-        os.remove(result_path)
-
-    # Ensure results directory exists
+    # Ensure results directory exists (no longer deleting existing results)
     os.makedirs(os.path.dirname(result_path) if os.path.dirname(result_path) else '.', exist_ok=True)
     os.makedirs(args.results_dir, exist_ok=True)
 
@@ -442,7 +453,25 @@ async def main():
         help="Print detailed error traces"
     )
 
+    # Experiment versioning
+    parser.add_argument(
+        "--experiment_name",
+        type=str,
+        default=None,
+        help="Experiment identifier (e.g., 'v1', 'baseline'). If not specified, uses timestamp."
+    )
+
     args = parser.parse_args()
+
+    # Generate experiment suffix and update paths
+    experiment_suffix = generate_experiment_suffix(args.experiment_name)
+
+    # Update result_path with experiment suffix
+    base_name, extension = args.result_path.rsplit('.', 1)
+    args.result_path = f"{base_name}_{experiment_suffix}.{extension}"
+
+    # Update results_dir with experiment suffix
+    args.results_dir = f"{args.results_dir}_{experiment_suffix}"
 
     # Run evaluation
     await run_evaluation(args)
